@@ -12,7 +12,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 
 APP_ID = "io.github.mtkclient.Adwaita"
@@ -57,6 +57,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partitions = []
         self.partition_checks = {}
         self.partition_rows = {}
+        self.partition_images = {}
         self.log_buffer = Gtk.TextBuffer()
 
         header = Adw.HeaderBar()
@@ -195,11 +196,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_search.set_hexpand(True)
         self.partition_search.connect("search-changed", lambda *_: self._refresh_partition_view())
         partition_controls.append(self.partition_search)
-        partition_controls.append(Gtk.Label(label="Sort by"))
         self.partition_sort = Gtk.DropDown.new_from_strings(
             ["Device order", "Alphabetical"]
         )
-        self.partition_sort.set_tooltip_text("Choose partition order")
+        self.partition_sort.set_tooltip_text("Sort partitions")
         self.partition_sort.connect("notify::selected", lambda *_: self._refresh_partition_view())
         partition_controls.append(self.partition_sort)
         box.append(partition_controls)
@@ -478,13 +478,28 @@ class MtkWindow(Adw.ApplicationWindow):
             child = following
         self.partition_checks.clear()
         self.partition_rows.clear()
+        self.partition_images.clear()
         for name, size in self.partitions:
-            row = Adw.ActionRow(title=name, subtitle=self._format_size(size))
+            row = Adw.ActionRow(
+                title=name,
+                subtitle=f"{self._format_size(size)} · Drop an image or choose one"
+            )
             check = Gtk.CheckButton()
             check.set_valign(Gtk.Align.CENTER)
             check.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {name}"])
             row.add_prefix(check)
             check.connect("toggled", lambda *_: self._selection_changed())
+            choose = Gtk.Button(icon_name="document-open-symbolic")
+            choose.set_valign(Gtk.Align.CENTER)
+            choose.set_tooltip_text(f"Choose image file for {name}")
+            choose.update_property([Gtk.AccessibleProperty.LABEL], [f"Choose image for {name}"])
+            choose.connect("clicked", lambda _button, partition=name:
+                           self._choose_partition_image(partition))
+            row.add_suffix(choose)
+            drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+            drop.connect("drop", self._partition_file_dropped, name)
+            row.add_controller(drop)
+            row.set_tooltip_text("Drop an image file here, or use Choose…")
             self.partition_checks[name] = (check, size)
             self.partition_rows[name] = row
         self._refresh_partition_view()
@@ -553,6 +568,11 @@ class MtkWindow(Adw.ApplicationWindow):
         if not selected:
             self.toast_overlay.add_toast(Adw.Toast(title="Select at least one partition"))
             return
+        if operation == "write" and all(name in self.partition_images for name, _ in selected):
+            self._start_partition_write(selected, {
+                name: self.partition_images[name] for name, _ in selected
+            })
+            return
         dialog = Gtk.FileChooserNative.new(
             "Choose output folder" if operation == "read" else "Choose folder containing images",
             self, Gtk.FileChooserAction.SELECT_FOLDER, "_Select", "_Cancel"
@@ -567,6 +587,47 @@ class MtkWindow(Adw.ApplicationWindow):
         )
         dialog.connect("response", self._connection_file_chosen, file_kind)
         dialog.show()
+
+    def _choose_partition_image(self, name):
+        dialog = Gtk.FileChooserNative.new(
+            f"Choose image for {name}", self, Gtk.FileChooserAction.OPEN, "_Open", "_Cancel"
+        )
+        dialog.connect("response", self._partition_image_chosen, name)
+        dialog.show()
+
+    def _partition_image_chosen(self, dialog, response, name):
+        if response == Gtk.ResponseType.ACCEPT:
+            file = dialog.get_file()
+            if file and file.get_path():
+                self._set_partition_image(name, file.get_path())
+        dialog.destroy()
+
+    def _partition_file_dropped(self, _target, value, name):
+        files = value.get_files() if isinstance(value, Gdk.FileList) else []
+        if len(files) == 1:
+            path = files[0].get_path()
+            if path and os.path.isfile(path):
+                self._set_partition_image(name, path)
+                return True
+        self.toast_overlay.add_toast(Adw.Toast(title="Drop a local image file"))
+        return False
+
+    def _set_partition_image(self, name, path):
+        self.partition_images[name] = path
+        self.partition_rows[name].set_subtitle(
+            f"{self._format_size(self.partition_checks[name][1])} · {os.path.basename(path)}"
+        )
+        self.toast_overlay.add_toast(Adw.Toast(title=f"Image assigned to {name}"))
+
+    def _start_partition_write(self, selected, images):
+        names = ", ".join(name for name, _ in selected)
+        self._confirm_action(
+            "Write selected partitions?",
+            f"This will overwrite {len(selected)} device partition(s): {names}.",
+            "Write", lambda: self._run_operation(
+                "Write partitions", self._write_partitions, selected, images
+            ), destructive=True
+        )
 
     def _connection_file_chosen(self, dialog, response, file_kind):
         if response == Gtk.ResponseType.ACCEPT:
@@ -599,6 +660,9 @@ class MtkWindow(Adw.ApplicationWindow):
                 images = {}
                 missing = []
                 for name, _size in selected:
+                    if name in self.partition_images:
+                        images[name] = self.partition_images[name]
+                        continue
                     candidates = (f"{name}.bin", f"{name}.img")
                     image = next((os.path.join(folder, filename) for filename in candidates
                                   if os.path.isfile(os.path.join(folder, filename))), None)
@@ -611,14 +675,7 @@ class MtkWindow(Adw.ApplicationWindow):
                         title=f"No .bin or .img found for: {', '.join(missing[:3])}"
                     ))
                 else:
-                    names = ", ".join(name for name, _ in selected)
-                    self._confirm_action(
-                        "Write selected partitions?",
-                        f"This will overwrite {len(selected)} device partition(s): {names}.",
-                        "Write", lambda: self._run_operation(
-                            "Write partitions", self._write_partitions, selected, images
-                        ), destructive=True
-                    )
+                    self._start_partition_write(selected, images)
         dialog.destroy()
 
     def _confirm_erase(self):
