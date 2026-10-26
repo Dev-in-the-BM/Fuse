@@ -10,7 +10,7 @@ Install GTK 4 and libadwaita development/runtime packages plus PyGObject for you
 python3 Adwaita/mtk_adwaita.py
 ```
 
-Device detection and initialization use the existing MTK backend in a background thread. The Flash view supports GPT partition read/write/erase, includes device-order or alphabetical sorting, and filters by partition name. Sort and search do not discard partition selections. Storage supports whole-area read/write; Utilities contains key generation, bootloader lock/unlock, and Logs. Backend messages are shown in Logs and printed to the launching terminal. Destructive actions require confirmation. Validate hardware behavior on a supported device before relying on these operations.
+Device detection and initialization use the existing MTK backend in a background thread. The Flash view supports GPT partition read/write/erase, includes device-order or alphabetical sorting, and filters by partition name. Sort and search do not discard partition selections. Its Chip storage section supports whole-area read/write; Utilities contains key generation, bootloader lock/unlock, and Logs. Backend messages are shown in Logs and printed to the launching terminal. Destructive actions require confirmation. Validate hardware behavior on a supported device before relying on these operations.
 
 ## GNOME app-grid shortcut
 

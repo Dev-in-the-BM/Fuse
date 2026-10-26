@@ -78,8 +78,6 @@ class MtkWindow(Adw.ApplicationWindow):
                                         "phone-symbolic")
         self.stack.add_titled_with_icon(self._partition_page(), "partitions", "Flash",
                                         "drive-harddisk-symbolic")
-        self.stack.add_titled_with_icon(self._storage_page(), "storage", "Storage",
-                                        "drive-harddisk-symbolic")
         self.stack.add_titled_with_icon(self._utilities_page(), "utilities", "Utilities",
                                         "applications-system-symbolic")
 
@@ -177,6 +175,9 @@ class MtkWindow(Adw.ApplicationWindow):
         return header
 
     def _partition_page(self):
+        return self._partitions_content()
+
+    def _partitions_content(self):
         box, clamp = self._page_column()
         box.append(self._page_heading(
             "Flash partitions", "Choose one or more GPT partitions, then select an action."
@@ -243,39 +244,40 @@ class MtkWindow(Adw.ApplicationWindow):
             action_bar.pack_end(button)
         box.append(self.dump_gpt)
         box.append(action_bar)
+        box.append(self._storage_page())
         return self._scrolled(clamp)
 
     def _storage_page(self):
-        box, clamp = self._page_column(760)
-        box.append(self._page_heading(
-            "Storage images", "Read or write a complete storage area. Writes replace the selected area."
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        section.set_margin_top(24)
+        section.append(self._page_heading(
+            "Chip storage", "Read or write a complete eMMC/UFS area. Writes replace the selected area."
         ))
         self.storage_status = Gtk.Label(label="Connect a device to use storage actions.", xalign=0)
         self.storage_status.add_css_class("dimmed")
-        box.append(self.storage_status)
+        section.append(self.storage_status)
         self.storage_progress = Gtk.ProgressBar()
         self.storage_progress.set_visible(False)
-        box.append(self.storage_progress)
-        raw_group = Adw.PreferencesGroup(title="Whole storage area")
-        raw_group.set_description("Choose the eMMC/UFS logical area to operate on.")
-        self.raw_target = Gtk.DropDown.new_from_strings(
-            ["User storage", "Boot 1", "Boot 2", "RPMB"]
-        )
-        raw_row = Adw.ActionRow(title="Storage area")
+        section.append(self.storage_progress)
+        raw_group = Adw.PreferencesGroup(title="Storage area")
+        raw_group.set_description("Select a chip area, then choose whether to read or replace it.")
+        self.raw_target = Gtk.DropDown.new_from_strings(["User storage", "Boot 1", "Boot 2", "RPMB"])
+        self.raw_target.set_valign(Gtk.Align.CENTER)
+        raw_row = Adw.ActionRow(title="Area")
         raw_row.add_suffix(self.raw_target)
         raw_group.add(raw_row)
-        raw_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
-        raw_controls.set_halign(Gtk.Align.END)
         self.raw_read_button = Gtk.Button(label="Read…")
         self.raw_read_button.connect("clicked", lambda *_: self._choose_raw_file("read"))
         self.raw_write_button = Gtk.Button(label="Write…")
         self.raw_write_button.connect("clicked", lambda *_: self._choose_raw_file("write"))
         for button in (self.raw_read_button, self.raw_write_button):
             button.set_sensitive(False)
-            raw_controls.append(button)
-        raw_group.add(raw_controls)
-        box.append(raw_group)
-        return self._scrolled(clamp)
+        action_row = Adw.ActionRow(title="Image actions", subtitle="Writing overwrites the selected area")
+        action_row.add_suffix(self.raw_read_button)
+        action_row.add_suffix(self.raw_write_button)
+        raw_group.add(action_row)
+        section.append(raw_group)
+        return section
 
     def _tools_page(self):
         box, clamp = self._page_column(760)
