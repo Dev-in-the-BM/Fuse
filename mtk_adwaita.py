@@ -92,6 +92,11 @@ class MtkWindow(Adw.ApplicationWindow):
         preferences_button.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences"])
         preferences_button.connect("clicked", self.open_preferences)
         header.pack_end(preferences_button)
+        help_button = Gtk.Button.new_from_icon_name("help-about-symbolic")
+        help_button.set_tooltip_text("How to connect a device")
+        help_button.update_property([Gtk.AccessibleProperty.LABEL], ["How to connect a device"])
+        help_button.connect("clicked", self.open_connection_guide)
+        header.pack_end(help_button)
 
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
@@ -106,6 +111,230 @@ class MtkWindow(Adw.ApplicationWindow):
                                         "drive-harddisk-symbolic")
         self.stack.add_titled_with_icon(self._utilities_page(), "utilities", "Utilities",
                                         "applications-system-symbolic")
+
+    def open_connection_guide(self, *_args):
+        """Present an animated, illustrated connection walkthrough."""
+        if getattr(self, "connection_guide", None):
+            self.connection_guide.present()
+            return
+
+        window = Adw.Window(
+            transient_for=self, modal=True, title="Connection guide",
+            default_width=920, default_height=760,
+        )
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        toolbar.add_top_bar(header)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        page.set_margin_top(24)
+        page.set_margin_bottom(24)
+        page.set_margin_start(28)
+        page.set_margin_end(28)
+
+        intro = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        eyebrow = Gtk.Label(label="DEVICE SETUP", xalign=0)
+        eyebrow.add_css_class("caption")
+        eyebrow.add_css_class("accent")
+        intro.append(eyebrow)
+        title = Gtk.Label(label="Let’s get your device connected", xalign=0)
+        title.add_css_class("title-1")
+        intro.append(title)
+        subtitle = Gtk.Label(
+            label="Follow the illustrated steps. Start with the phone powered off and USB unplugged.",
+            xalign=0, wrap=True,
+        )
+        subtitle.add_css_class("dimmed")
+        intro.append(subtitle)
+        page.append(intro)
+
+        progress_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        step_count = Gtk.Label(xalign=0)
+        step_count.add_css_class("heading")
+        progress_row.append(step_count)
+        progress = Gtk.ProgressBar()
+        progress.set_hexpand(True)
+        progress_row.append(progress)
+        page.append(progress_row)
+
+        # Each page gives its original illustration room to read at a glance;
+        # Gtk.Stack supplies a native slide transition between the steps.
+        slides = Gtk.Stack()
+        slides.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        slides.set_transition_duration(360)
+        slides.set_vhomogeneous(False)
+
+        def slide(art_name, art_label, heading, description, extra=None):
+            layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=28)
+            layout.set_valign(Gtk.Align.CENTER)
+
+            picture = Gtk.Picture.new_for_filename(
+                os.path.join(APP_DIR, "assets", art_name)
+            )
+            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            picture.set_can_shrink(True)
+            picture.set_size_request(260, 340)
+            picture.set_accessible_role(Gtk.AccessibleRole.IMG)
+            picture.update_property([Gtk.AccessibleProperty.LABEL], [art_label])
+            art_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            art_card.add_css_class("card")
+            art_card.set_halign(Gtk.Align.CENTER)
+            art_card.set_valign(Gtk.Align.CENTER)
+            art_card.append(picture)
+            layout.append(art_card)
+
+            copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            copy.set_hexpand(True)
+            copy.set_valign(Gtk.Align.CENTER)
+            copy_title = Gtk.Label(label=heading, xalign=0, wrap=True)
+            copy_title.add_css_class("title-2")
+            copy.append(copy_title)
+            copy_description = Gtk.Label(label=description, xalign=0, wrap=True)
+            copy_description.add_css_class("dimmed")
+            copy.append(copy_description)
+            if extra:
+                copy.append(extra)
+            layout.append(copy)
+            return layout
+
+        power_note = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        power_note.add_css_class("card")
+        power_note.set_margin_top(8)
+        power_note.set_margin_bottom(8)
+        power_note.set_margin_start(2)
+        power_note.set_margin_end(2)
+        power_icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
+        power_icon.set_valign(Gtk.Align.START)
+        power_note.append(power_icon)
+        power_note_text = Gtk.Label(
+            label="A dark screen is not always powered off. Disconnect the cable first; if the phone is frozen, hold Power until it shuts down.",
+            xalign=0, wrap=True,
+        )
+        power_note_text.set_margin_top(12)
+        power_note_text.set_margin_bottom(12)
+        power_note_text.set_margin_end(12)
+        power_note.append(power_note_text)
+        slides.add_named(slide(
+            "connect-power-off.png",
+            "Phone illustration for the first step: power off the phone.",
+            "1. Power off the phone",
+            "Begin with the device fully shut down. This lets the computer catch the early boot connection instead of an already-running Android system.",
+            power_note,
+        ), "power")
+
+        mode_cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for icon_name, mode_title, mode_body in (
+            ("input-keyboard-symbolic", "BootROM mode", "Press and hold Volume Up, Volume Down, or the button combination for your model. Keep holding while you plug in USB. Some devices need both volume buttons or all hardware buttons."),
+            ("phone-symbolic", "Preloader mode", "With the phone off, plug in USB without holding any hardware buttons."),
+        ):
+            mode_card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            mode_card.add_css_class("card")
+            mode_card.set_margin_start(2)
+            mode_card.set_margin_end(2)
+            mode_icon = Gtk.Image.new_from_icon_name(icon_name)
+            mode_icon.set_valign(Gtk.Align.START)
+            mode_icon.set_margin_start(12)
+            mode_icon.set_margin_top(14)
+            mode_card.append(mode_icon)
+            mode_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            mode_copy.set_margin_top(12)
+            mode_copy.set_margin_bottom(12)
+            mode_copy.set_margin_end(12)
+            mode_heading = Gtk.Label(label=mode_title, xalign=0)
+            mode_heading.add_css_class("heading")
+            mode_copy.append(mode_heading)
+            mode_detail = Gtk.Label(label=mode_body, xalign=0, wrap=True)
+            mode_detail.add_css_class("dimmed")
+            mode_copy.append(mode_detail)
+            mode_card.append(mode_copy)
+            mode_cards.append(mode_card)
+        slides.add_named(slide(
+            "connect-usb-buttons.png",
+            "Phone illustration for the second step: connect USB while holding buttons if needed.",
+            "2. Choose a connection mode",
+            "The right method depends on the phone. Try the mode requested by your device or its service instructions.",
+            mode_cards,
+        ), "mode")
+
+        testpoint_note = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        testpoint_note.add_css_class("card")
+        warning_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        warning_icon.set_valign(Gtk.Align.START)
+        warning_icon.set_margin_start(12)
+        warning_icon.set_margin_top(14)
+        testpoint_note.append(warning_icon)
+        warning_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        warning_copy.set_margin_top(12)
+        warning_copy.set_margin_bottom(12)
+        warning_copy.set_margin_end(12)
+        warning_title = Gtk.Label(label="Use the exact board diagram", xalign=0)
+        warning_title.add_css_class("heading")
+        warning_copy.append(warning_title)
+        warning_body = Gtk.Label(
+            label="Test-point locations differ by model. Short only the documented point to ground while connecting USB. The wrong pads can damage the device; do not guess.",
+            xalign=0, wrap=True,
+        )
+        warning_body.add_css_class("dimmed")
+        warning_copy.append(warning_body)
+        testpoint_note.append(warning_copy)
+        slides.add_named(slide(
+            "connect-test-point.png",
+            "Close-up illustration of a circuit-board test point marked TP1.",
+            "3. If it still isn’t detected",
+            "Some devices need a hardware test point to enter BootROM. The original guide marks an example point as TP1; that label and location are not universal.",
+            testpoint_note,
+        ), "testpoint")
+        page.append(slides)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        back_button = Gtk.Button(label="Back")
+        next_button = Gtk.Button(label="Next")
+        next_button.add_css_class("suggested-action")
+        actions.append(back_button)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        actions.append(spacer)
+        close_button = Gtk.Button(label="Close guide")
+        actions.append(close_button)
+        actions.append(next_button)
+        page.append(actions)
+
+        slide_names = ("power", "mode", "testpoint")
+        current_step = 0
+
+        def show_step(index):
+            nonlocal current_step
+            current_step = max(0, min(index, len(slide_names) - 1))
+            slides.set_visible_child_name(slide_names[current_step])
+            step_count.set_text(f"STEP {current_step + 1} OF {len(slide_names)}")
+            progress.set_fraction((current_step + 1) / len(slide_names))
+            back_button.set_sensitive(current_step > 0)
+            next_button.set_label(
+                "Start device detection" if current_step == len(slide_names) - 1 else "Next"
+            )
+
+        def advance(*_args):
+            if current_step == len(slide_names) - 1:
+                window.close()
+                self.connect_backend()
+            else:
+                show_step(current_step + 1)
+
+        back_button.connect("clicked", lambda *_: show_step(current_step - 1))
+        next_button.connect("clicked", advance)
+        close_button.connect("clicked", lambda *_: window.close())
+        show_step(0)
+
+        clamp = Adw.Clamp(maximum_size=860)
+        clamp.set_child(page)
+        toolbar.set_content(clamp)
+        window.set_content(toolbar)
+        window.connect("close-request", self._connection_guide_closed)
+        self.connection_guide = window
+        window.present()
+
+    def _connection_guide_closed(self, *_args):
+        self.connection_guide = None
+        return GLib.SOURCE_REMOVE
 
     def open_preferences(self, *_args):
         if getattr(self, "preferences_window", None):
