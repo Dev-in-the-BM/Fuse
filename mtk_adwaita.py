@@ -49,6 +49,16 @@ class BackendLog:
         GLib.idle_add(self.window.append_log, text)
 
 
+class BackendProgress:
+    """Adapt MTK's byte-position callback to the GTK progress display."""
+
+    def __init__(self, window):
+        self.window = window
+
+    def emit(self, position):
+        GLib.idle_add(self.window._update_operation_progress, position)
+
+
 class MtkWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="MTK Client")
@@ -58,6 +68,9 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_thread = None
         self.device_connected = False
         self.operation_busy = False
+        self.operation_started_at = None
+        self.operation_total = None
+        self.operation_progress_position = 0
         self.loader_path = None
         self.preloader_path = None
         self.partitions = []
@@ -256,6 +269,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_status.add_css_class("dimmed")
         box.append(self.operation_status)
         self.operation_progress = Gtk.ProgressBar()
+        self.operation_progress.set_show_text(True)
         self.operation_progress.set_visible(False)
         box.append(self.operation_progress)
         partition_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -329,6 +343,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.storage_status.add_css_class("dimmed")
         section.append(self.storage_status)
         self.storage_progress = Gtk.ProgressBar()
+        self.storage_progress.set_show_text(True)
         self.storage_progress.set_visible(False)
         section.append(self.storage_progress)
         raw_group = Adw.PreferencesGroup(title="Storage area")
@@ -360,6 +375,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.tools_status.add_css_class("dimmed")
         box.append(self.tools_status)
         self.tools_progress = Gtk.ProgressBar()
+        self.tools_progress.set_show_text(True)
         self.tools_progress.set_visible(False)
         box.append(self.tools_progress)
         security_group = Adw.PreferencesGroup(title="Security tools")
@@ -434,7 +450,8 @@ class MtkWindow(Adw.ApplicationWindow):
         # MTK's config writes its log relative to the backend checkout's cwd.
         os.makedirs(os.path.join(MTKCLIENT_DIR, "logs"), exist_ok=True)
         bridge = BackendLog(self)
-        config = MtkConfig(loglevel=logging.DEBUG, gui=bridge)
+        config = MtkConfig(loglevel=logging.DEBUG, gui=bridge,
+                           guiprogress=BackendProgress(self))
         config.gpt_settings = GptSettings(gpt_num_part_entries="0",
                                           gpt_part_entry_size="0",
                                           gpt_part_entry_start_lba="0")
@@ -695,7 +712,8 @@ class MtkWindow(Adw.ApplicationWindow):
             "Write selected partitions?",
             f"This will overwrite {len(selected)} device partition(s): {names}.",
             "Write", lambda: self._run_operation(
-                "Write partitions", self._write_partitions, selected, images
+                "Write partitions", self._write_partitions, selected, images,
+                total=sum(os.path.getsize(images[name]) for name, _ in selected)
             ), destructive=True
         )
 
@@ -725,7 +743,8 @@ class MtkWindow(Adw.ApplicationWindow):
             if operation == "read":
                 include_gpt = self.dump_gpt.get_active()
                 self._run_operation("Read partitions", self._read_partitions,
-                                    selected, folder, include_gpt)
+                                    selected, folder, include_gpt,
+                                    total=selected[0][1] if len(selected) == 1 else None)
             else:
                 images = {}
                 missing = []
@@ -802,7 +821,8 @@ class MtkWindow(Adw.ApplicationWindow):
                     f"Write {parttype} image?",
                     f"This will overwrite the {parttype} storage area using {os.path.basename(file_path)}.",
                     "Write", lambda: self._run_operation(
-                        f"Write {parttype}", self._write_raw, parttype, file_path
+                        f"Write {parttype}", self._write_raw, parttype, file_path,
+                        total=os.path.getsize(file_path)
                     ), destructive=True
                 )
         dialog.destroy()
@@ -873,11 +893,14 @@ class MtkWindow(Adw.ApplicationWindow):
         if not success:
             raise RuntimeError(str(message))
 
-    def _run_operation(self, title, callback, *args):
+    def _run_operation(self, title, callback, *args, total=None):
         if self.operation_thread and self.operation_thread.is_alive():
             self.toast_overlay.add_toast(Adw.Toast(title="Another device operation is running"))
             return
         self._set_operation_running(True, title)
+        self.operation_started_at = time.monotonic()
+        self.operation_total = total
+        self.operation_progress_position = 0
 
         def run():
             try:
@@ -890,6 +913,38 @@ class MtkWindow(Adw.ApplicationWindow):
 
         self.operation_thread = threading.Thread(target=run, name="mtk-operation", daemon=True)
         self.operation_thread.start()
+
+    def _update_operation_progress(self, position):
+        """Render backend byte progress and an ETA using the legacy estimator."""
+        try:
+            position = max(0, int(position))
+        except (TypeError, ValueError):
+            return GLib.SOURCE_REMOVE
+        self.operation_progress_position = position
+        if self.operation_total and self.operation_total > 0:
+            fraction = min(position / self.operation_total, 1.0)
+            elapsed = time.monotonic() - self.operation_started_at
+            remaining = int(elapsed * (self.operation_total / position - 1)) if position else 0
+            self.operation_progress.set_fraction(fraction)
+            self.operation_progress.set_text(
+                f"{fraction:.0%} · {self._format_duration(remaining)} remaining"
+                if position else "Estimating time…"
+            )
+        else:
+            self.operation_progress.pulse()
+            self.operation_progress.set_text("Estimating time…")
+        return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02d}h:{minutes:02d}m:{seconds:02d}s"
+        if minutes:
+            return f"{minutes:02d}m:{seconds:02d}s"
+        return f"{seconds:02d}s"
 
     def _set_operation_running(self, running, title=""):
         self.operation_busy = running
@@ -906,10 +961,14 @@ class MtkWindow(Adw.ApplicationWindow):
             self.select_all.set_sensitive(False)
             for bar in bars:
                 bar.pulse()
+                bar.set_text("Starting…")
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title}… See Logs for details.")
             GLib.timeout_add(120, self._pulse_progress)
         else:
+            for bar in bars:
+                bar.set_fraction(0)
+                bar.set_text("")
             for button in (self.raw_read_button, self.raw_write_button, self.key_button,
                            self.unlock_button, self.lock_button):
                 button.set_sensitive(self.device_connected)
