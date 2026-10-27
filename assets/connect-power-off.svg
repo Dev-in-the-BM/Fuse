@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="A phone switched off">
+  <g stroke="__outline__" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="83" y="49" width="194" height="356" rx="31" fill="__device__"/>
+    <rect x="97" y="68" width="166" height="318" rx="20" fill="__screen__" stroke="none"/>
+    <path d="M153 60h54" fill="none" stroke-width="4"/>
+    <circle cx="225" cy="60" r="3" fill="__outline__" stroke="none"/>
+    <path d="M277 145h9v48h-9" fill="__device__"/>
+    <path d="M277 221h9v44h-9" fill="__device__"/>
+  </g>
+  <g transform="translate(157 197)" fill="none" stroke="__accent__" stroke-width="8" stroke-linecap="round">
+    <path d="M23 0v27"/>
+    <path d="M7 9a25 25 0 1 0 32 0"/>
+  </g>
+  <path d="M148 328h64" fill="none" stroke="__soft__" stroke-width="5" stroke-linecap="round"/>
+</svg>

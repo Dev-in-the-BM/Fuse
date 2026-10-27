@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="A phone with volume buttons held while a USB cable is connected">
+  <g stroke="__outline__" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="83" y="48" width="194" height="356" rx="31" fill="__device__"/>
+    <rect x="97" y="67" width="166" height="319" rx="20" fill="__screen__" stroke="none"/>
+    <path d="M153 59h54" fill="none" stroke-width="4"/>
+    <circle cx="225" cy="59" r="3" fill="__outline__" stroke="none"/>
+    <path d="M83 145h-9v45h9" fill="__accent__" stroke="__accent__"/>
+    <path d="M83 205h-9v45h9" fill="__accent__" stroke="__accent__"/>
+    <path d="M277 162h9v48h-9" fill="__device__"/>
+    <path d="M180 404v28" fill="none" stroke="__outline__"/>
+    <path d="M164 432h32v14h-32z" fill="__device__"/>
+  </g>
+  <path d="M180 446v20c0 13 10 22 23 22h30" fill="none" stroke="__outline__" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="239" cy="488" r="6" fill="__accent__"/>
+  <path d="M103 161h-17M103 221h-17" fill="none" stroke="__screen__" stroke-width="4" stroke-linecap="round"/>
+</svg>

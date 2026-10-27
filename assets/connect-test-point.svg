@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="A probe touching a marked test point on a circuit board">
+  <g stroke="__outline__" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="34" y="96" width="292" height="286" rx="28" fill="__board__"/>
+    <path d="M72 154h54v45h42M288 151h-48v39h-36M73 326h51v-40h43M286 321h-42v-39h-38" fill="none" stroke="__trace__" stroke-width="8"/>
+    <circle cx="72" cy="154" r="10" fill="__pad__"/>
+    <circle cx="288" cy="151" r="10" fill="__pad__"/>
+    <circle cx="73" cy="326" r="10" fill="__pad__"/>
+    <circle cx="286" cy="321" r="10" fill="__pad__"/>
+    <rect x="143" y="223" width="74" height="56" rx="9" fill="__device__"/>
+    <path d="M158 239h44M158 251h30M158 263h37" fill="none" stroke="__trace__" stroke-width="4"/>
+  </g>
+  <path d="M34 140h-17v198h17M326 140h17v198h-17" fill="none" stroke="__trace__" stroke-width="5"/>
+  <circle cx="113" cy="222" r="27" fill="__accent_soft__"/>
+  <circle cx="113" cy="222" r="13" fill="__accent__" stroke="__outline__" stroke-width="5"/>
+  <path d="M268 66 137 207" fill="none" stroke="__outline__" stroke-width="12" stroke-linecap="round"/>
+  <path d="m279 55-18 5 11 11 5-16Z" fill="__accent__" stroke="__outline__" stroke-width="4" stroke-linejoin="round"/>
+  <path d="m137 207-17 18" fill="none" stroke="__outline__" stroke-width="8" stroke-linecap="round"/>
+  <rect x="70" y="397" width="220" height="43" rx="12" fill="__label_bg__"/>
+  <text x="180" y="427" text-anchor="middle" font-family="sans-serif" font-size="25" font-weight="600" letter-spacing="1" fill="__text__">TP1</text>
+</svg>
