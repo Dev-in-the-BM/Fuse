@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="A USB cable plugged into a phone with no buttons held">
+  <g stroke="#5e5c64" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="83" y="48" width="194" height="356" rx="31" fill="#deddda"/>
+    <rect x="97" y="67" width="166" height="319" rx="20" fill="#f6f5f4" stroke="none"/>
+    <path d="M153 59h54" fill="none" stroke-width="4"/>
+    <circle cx="225" cy="59" r="3" fill="#5e5c64" stroke="none"/>
+    <path d="M74 145h9v45h-9" fill="#9a9996" stroke="#9a9996"/>
+    <path d="M74 205h9v45h-9" fill="#9a9996" stroke="#9a9996"/>
+    <path d="M277 162h9v48h-9" fill="#deddda"/>
+    <path d="M180 404v28" fill="none" stroke="#3584e4"/>
+    <path d="M164 432h32v14h-32z" fill="#3584e4" stroke="#3584e4"/>
+  </g>
+  <path d="M180 446v10c0 10 8 17 18 17h27" fill="none" stroke="#3584e4" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="225" cy="473" r="6" fill="#3584e4"/>
+  <path d="M103 161h-17M103 221h-17" fill="none" stroke="#f6f5f4" stroke-width="4" stroke-linecap="round"/>
+</svg>

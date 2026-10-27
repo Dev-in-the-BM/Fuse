@@ -3,6 +3,7 @@
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -15,7 +16,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 
 APP_ID = "io.github.mtkclient.Adwaita"
@@ -163,31 +164,77 @@ class MtkWindow(Adw.ApplicationWindow):
         progress_row.append(progress_segments)
         page.append(progress_row)
 
-        # Each page gives its original illustration room to read at a glance;
+        # Each page gives its theme-aware SVG illustration room to read at a glance;
         # Gtk.Stack supplies a native slide transition between the steps.
         slides = Gtk.Stack()
         slides.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
         slides.set_transition_duration(360)
         slides.set_vhomogeneous(False)
 
+        art_pictures = []
+        style_manager = Adw.StyleManager.get_default()
+        art_palettes = {
+            False: {
+                "outline": "#5e5c64", "device": "#deddda", "screen": "#f6f5f4",
+                "soft": "#9a9996", "accent": "#3584e4", "accent_soft": "#99c1f1",
+                "board": "#e8e6e3", "trace": "#9a9996", "pad": "#c0bfbc",
+                "label_bg": "#deddda", "text": "#3d3846",
+            },
+            True: {
+                "outline": "#c0bfbc", "device": "#3d3846", "screen": "#241f31",
+                "soft": "#77767b", "accent": "#78aeed", "accent_soft": "#355b83",
+                "board": "#303030", "trace": "#77767b", "pad": "#5e5c64",
+                "label_bg": "#3d3846", "text": "#f6f5f4",
+            },
+        }
+
+        def render_illustration(picture, art_name):
+            palette = art_palettes[style_manager.get_dark()]
+            path = os.path.join(APP_DIR, "assets", art_name)
+            with open(path, "rb") as svg_file:
+                svg = svg_file.read().decode("utf-8")
+            color_map = {
+                light_value: palette[name]
+                for name, light_value in art_palettes[False].items()
+            }
+            svg = re.sub(
+                r"#[0-9a-fA-F]{6}",
+                lambda match: color_map.get(match.group(0), match.group(0)),
+                svg,
+            )
+            loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
+            loader.set_size(720, 960)
+            loader.write(svg.encode("utf-8"))
+            loader.close()
+            picture.set_paintable(Gdk.Texture.new_for_pixbuf(loader.get_pixbuf()))
+
+        def update_illustration_theme(*_args):
+            for picture, art_name in art_pictures:
+                render_illustration(picture, art_name)
+
+        self._connection_guide_theme_handler = style_manager.connect(
+            "notify::dark", update_illustration_theme
+        )
+
         def slide(art_name, art_label, heading, description, extra=None):
             layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
             layout.set_valign(Gtk.Align.CENTER)
 
-            picture = Gtk.Picture.new_for_filename(
-                os.path.join(APP_DIR, "assets", art_name)
-            )
-            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
-            picture.set_can_shrink(True)
-            picture.set_size_request(240, 320)
-            picture.set_accessible_role(Gtk.AccessibleRole.IMG)
-            picture.update_property([Gtk.AccessibleProperty.LABEL], [art_label])
-            art_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            art_card.add_css_class("card")
-            art_card.set_halign(Gtk.Align.CENTER)
-            art_card.set_valign(Gtk.Align.CENTER)
-            art_card.append(picture)
-            layout.append(art_card)
+            if art_name:
+                picture = Gtk.Picture()
+                picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+                picture.set_can_shrink(True)
+                picture.set_size_request(240, 320)
+                picture.set_accessible_role(Gtk.AccessibleRole.IMG)
+                picture.update_property([Gtk.AccessibleProperty.LABEL], [art_label])
+                art_pictures.append((picture, art_name))
+                render_illustration(picture, art_name)
+                art_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                art_card.add_css_class("card")
+                art_card.set_halign(Gtk.Align.CENTER)
+                art_card.set_valign(Gtk.Align.CENTER)
+                art_card.append(picture)
+                layout.append(art_card)
 
             copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             copy.set_hexpand(True)
@@ -221,7 +268,7 @@ class MtkWindow(Adw.ApplicationWindow):
         power_note_text.set_margin_end(12)
         power_note.append(power_note_text)
         slides.add_named(slide(
-            "connect-power-off.png",
+            "connect-power-off.svg",
             "Phone illustration for the first step: power off the phone.",
             "1. Power off the phone",
             "Begin with the device fully shut down. This lets the computer catch the early boot connection instead of an already-running Android system.",
@@ -229,19 +276,30 @@ class MtkWindow(Adw.ApplicationWindow):
         ), "power")
 
         mode_cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        for icon_name, mode_title, mode_body in (
-            ("input-keyboard-symbolic", "BootROM mode", "Press and hold Volume Up, Volume Down, or the button combination for your model. Keep holding while you plug in USB. Some devices need both volume buttons or all hardware buttons."),
-            ("phone-symbolic", "Preloader mode", "With the phone off, plug in USB without holding any hardware buttons."),
+        for art_name, mode_title, mode_body in (
+            ("connect-usb-buttons.svg", "BootROM mode", "Press and hold Volume Up, Volume Down, or the button combination for your model. Keep holding while you plug in USB. Some devices need both volume buttons or all hardware buttons."),
+            ("connect-usb-preloader.svg", "Preloader mode", "With the phone off, plug in USB without holding any hardware buttons."),
         ):
-            mode_card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            mode_card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
             mode_card.add_css_class("card")
             mode_card.set_margin_start(2)
             mode_card.set_margin_end(2)
-            mode_icon = Gtk.Image.new_from_icon_name(icon_name)
-            mode_icon.set_valign(Gtk.Align.START)
-            mode_icon.set_margin_start(12)
-            mode_icon.set_margin_top(14)
-            mode_card.append(mode_icon)
+            mode_picture = Gtk.Picture()
+            mode_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            mode_picture.set_can_shrink(True)
+            mode_picture.set_size_request(96, 128)
+            mode_picture.set_accessible_role(Gtk.AccessibleRole.IMG)
+            mode_art_label = (
+                "BootROM mode: volume buttons highlighted; USB cable muted"
+                if mode_title == "BootROM mode"
+                else "Preloader mode: USB cable highlighted; hardware buttons muted"
+            )
+            mode_picture.update_property(
+                [Gtk.AccessibleProperty.LABEL], [mode_art_label]
+            )
+            art_pictures.append((mode_picture, art_name))
+            render_illustration(mode_picture, art_name)
+            mode_card.append(mode_picture)
             mode_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
             mode_copy.set_margin_top(12)
             mode_copy.set_margin_bottom(12)
@@ -255,8 +313,8 @@ class MtkWindow(Adw.ApplicationWindow):
             mode_card.append(mode_copy)
             mode_cards.append(mode_card)
         slides.add_named(slide(
-            "connect-usb-buttons.png",
-            "Phone illustration for the second step: connect USB while holding buttons if needed.",
+            None,
+            "",
             "2. Choose a connection mode",
             "The right method depends on the phone. Try the mode requested by your device or its service instructions.",
             mode_cards,
@@ -284,7 +342,7 @@ class MtkWindow(Adw.ApplicationWindow):
         warning_copy.append(warning_body)
         testpoint_note.append(warning_copy)
         slides.add_named(slide(
-            "connect-test-point.png",
+            "connect-test-point.svg",
             "Close-up illustration of a circuit-board test point marked TP1.",
             "3. If it still isn’t detected",
             "Some devices need a hardware test point to enter BootROM. The original guide marks an example point as TP1; that label and location are not universal.",
@@ -345,6 +403,11 @@ class MtkWindow(Adw.ApplicationWindow):
         window.present()
 
     def _connection_guide_closed(self, *_args):
+        if getattr(self, "_connection_guide_theme_handler", None):
+            Adw.StyleManager.get_default().disconnect(
+                self._connection_guide_theme_handler
+            )
+            self._connection_guide_theme_handler = None
         self.connection_guide = None
         return GLib.SOURCE_REMOVE
 
