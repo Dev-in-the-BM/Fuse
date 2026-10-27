@@ -8,6 +8,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+from app_settings import get_backend_dir, set_backend_dir
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -16,7 +18,11 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 
 APP_ID = "io.github.mtkclient.Adwaita"
-PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+MTKCLIENT_DIR = os.environ.get(
+    "MTKCLIENT_DIR",
+    get_backend_dir(os.path.join(APP_DIR, "..", "mtkclient")),
+)
 
 
 class UiLogHandler(logging.Handler):
@@ -67,6 +73,11 @@ class MtkWindow(Adw.ApplicationWindow):
         switcher.set_stack(self.stack)
         switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
         header.set_title_widget(switcher)
+        preferences_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
+        preferences_button.set_tooltip_text("Preferences")
+        preferences_button.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences"])
+        preferences_button.connect("clicked", self.open_preferences)
+        header.pack_end(preferences_button)
 
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
@@ -81,6 +92,64 @@ class MtkWindow(Adw.ApplicationWindow):
                                         "drive-harddisk-symbolic")
         self.stack.add_titled_with_icon(self._utilities_page(), "utilities", "Utilities",
                                         "applications-system-symbolic")
+
+    def open_preferences(self, *_args):
+        if getattr(self, "preferences_window", None):
+            self.preferences_window.present()
+            return
+
+        window = Adw.PreferencesWindow(transient_for=self, modal=True, title="Preferences")
+        page = Adw.PreferencesPage(title="General", icon_name="emblem-system-symbolic")
+        group = Adw.PreferencesGroup(
+            title="MTK Client backend",
+            description="Choose the source checkout used to run device operations.",
+        )
+        row = Adw.ActionRow(title="Checkout location", subtitle=MTKCLIENT_DIR)
+        choose_button = Gtk.Button(label="Choose…")
+        choose_button.set_valign(Gtk.Align.CENTER)
+        choose_button.connect("clicked", self._choose_backend_dir)
+        row.add_suffix(choose_button)
+        group.add(row)
+        page.add(group)
+        window.add(page)
+        window.connect("close-request", self._preferences_closed)
+        self.preferences_window = window
+        self.backend_path_row = row
+        window.present()
+
+    def _preferences_closed(self, *_args):
+        self.preferences_window = None
+        return GLib.SOURCE_REMOVE
+
+    def _choose_backend_dir(self, *_args):
+        chooser = Gtk.FileChooserNative.new(
+            "Select MTK Client checkout",
+            self.preferences_window,
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            "Select",
+            "Cancel",
+        )
+        chooser.connect("response", self._backend_dir_chosen)
+        chooser.show()
+
+    def _backend_dir_chosen(self, chooser, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            folder = chooser.get_file()
+            path = folder.get_path() if folder else None
+            if path:
+                path = os.path.realpath(path)
+                if not (os.path.isfile(os.path.join(path, "pyproject.toml"))
+                        and os.path.isfile(os.path.join(path, "uv.lock"))):
+                    self.toast_overlay.add_toast(Adw.Toast(
+                        title="Choose a checkout containing pyproject.toml and uv.lock"
+                    ))
+                else:
+                    set_backend_dir(path)
+                    self.backend_path_row.set_subtitle(path)
+                    self.toast_overlay.add_toast(Adw.Toast(
+                        title="Backend location saved. Restart the app to use it."
+                    ))
+        chooser.destroy()
 
     @staticmethod
     def _scrolled(child):
@@ -362,7 +431,8 @@ class MtkWindow(Adw.ApplicationWindow):
         from mtkclient.Library.mtk_class import Mtk
         from mtkclient.config.mtk_config import MtkConfig
 
-        os.makedirs(os.path.join(PROJECT_DIR, "logs"), exist_ok=True)
+        # MTK's config writes its log relative to the backend checkout's cwd.
+        os.makedirs(os.path.join(MTKCLIENT_DIR, "logs"), exist_ok=True)
         bridge = BackendLog(self)
         config = MtkConfig(loglevel=logging.DEBUG, gui=bridge)
         config.gpt_settings = GptSettings(gpt_num_part_entries="0",
@@ -405,7 +475,7 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _connect_worker(self):
         try:
-            os.chdir(PROJECT_DIR)
+            os.chdir(MTKCLIENT_DIR)
             if self.backend is None:
                 self.backend = self._prepare_backend()
             mtk = self.backend.mtk
