@@ -71,6 +71,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_started_at = None
         self.operation_total = None
         self.operation_progress_position = 0
+        self.operation_has_progress = False
         self.loader_path = None
         self.preloader_path = None
         self.partitions = []
@@ -785,7 +786,8 @@ class MtkWindow(Adw.ApplicationWindow):
             "Erase selected partitions?",
             f"All data in {len(selected)} partition(s) will be erased: {names}.",
             "Erase", lambda: self._run_operation(
-                "Erase partitions", self._erase_partitions, selected
+                "Erase partitions", self._erase_partitions, selected,
+                total=sum(size for _name, size in selected)
             ), destructive=True
         )
 
@@ -822,7 +824,8 @@ class MtkWindow(Adw.ApplicationWindow):
             file_path = dialog.get_file().get_path()
             if operation == "read":
                 self._run_operation(
-                    f"Read {parttype}", self._read_raw, parttype, file_path
+                    f"Read {parttype}", self._read_raw, parttype, file_path,
+                    total=self._raw_area_size(parttype)
                 )
             else:
                 self._confirm_action(
@@ -855,6 +858,25 @@ class MtkWindow(Adw.ApplicationWindow):
         else:
             args = SimpleNamespace(filename=filename, parttype=parttype)
             handler.handle_da_cmds(handler.mtk, "wf", args)
+
+    def _raw_area_size(self, parttype):
+        """Return the backend-reported capacity used by a raw-area transfer."""
+        try:
+            storage = self.backend.mtk.daloader.daconfig.storage
+            flashtype = storage.flashtype
+            if flashtype == "emmc":
+                sizes = {
+                    "user": storage.emmc.user_size,
+                    "boot1": storage.emmc.boot1_size,
+                    "boot2": storage.emmc.boot2_size,
+                    "rpmb": storage.emmc.rpmb_size,
+                }
+                return sizes.get(parttype) or None
+            if flashtype == "ufs" and parttype == "user":
+                return storage.ufs.lu0_size or storage.flashsize or None
+            return storage.flashsize or None
+        except (AttributeError, TypeError):
+            return None
 
     def _choose_key_directory(self):
         dialog = Gtk.FileChooserNative.new(
@@ -909,6 +931,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_started_at = time.monotonic()
         self.operation_total = total
         self.operation_progress_position = 0
+        self.operation_has_progress = False
 
         def run():
             try:
@@ -929,18 +952,20 @@ class MtkWindow(Adw.ApplicationWindow):
         except (TypeError, ValueError):
             return GLib.SOURCE_REMOVE
         self.operation_progress_position = position
+        self.operation_has_progress = True
         if self.operation_total and self.operation_total > 0:
             fraction = min(position / self.operation_total, 1.0)
             elapsed = time.monotonic() - self.operation_started_at
             remaining = int(elapsed * (self.operation_total / position - 1)) if position else 0
-            self.operation_progress.set_fraction(fraction)
-            self.operation_progress.set_text(
-                f"{fraction:.0%} · {self._format_duration(remaining)} remaining"
-                if position else "Estimating time…"
-            )
+            text = f"{fraction:.0%} · {self._format_duration(remaining)} remaining"
+            for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
+                bar.set_fraction(fraction)
+                bar.set_text(text)
         else:
-            self.operation_progress.pulse()
-            self.operation_progress.set_text("Estimating time…")
+            # The backend gives byte positions but not a transfer limit for every
+            # command. Keep that real activity visible without inventing a percent.
+            for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
+                bar.set_text(f"{self._format_size(position)} transferred · estimating time…")
         return GLib.SOURCE_REMOVE
 
     @staticmethod
@@ -990,8 +1015,9 @@ class MtkWindow(Adw.ApplicationWindow):
             for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
                 bar.set_visible(False)
             return GLib.SOURCE_REMOVE
-        for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
-            bar.pulse()
+        if not self.operation_has_progress:
+            for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
+                bar.pulse()
         return GLib.SOURCE_CONTINUE
 
     def _operation_finished(self, title, error):
