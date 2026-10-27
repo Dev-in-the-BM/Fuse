@@ -8,17 +8,19 @@ import threading
 import time
 from types import SimpleNamespace
 
-from app_settings import get_backend_dir, set_backend_dir
+from app_settings import (get_advanced_logging, get_backend_dir,
+                          set_advanced_logging, set_backend_dir)
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 
 APP_ID = "io.github.mtkclient.Adwaita"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+MAX_LOG_CHARS = 200_000
 MTKCLIENT_DIR = os.environ.get(
     "MTKCLIENT_DIR",
     get_backend_dir(os.path.join(APP_DIR, "..", "mtkclient")),
@@ -45,7 +47,6 @@ class BackendLog:
 
     def emit(self, message):
         text = str(message)
-        print(f"[mtkclient] {text}", flush=True)
         GLib.idle_add(self.window.append_log, text)
 
 
@@ -99,12 +100,16 @@ class MtkWindow(Adw.ApplicationWindow):
         self.toast_overlay.set_child(toolbar)
         self.set_content(self.toast_overlay)
 
-        self.stack.add_titled_with_icon(self._connection_page(), "device", "Connect",
+        connection_page = self._connection_page()
+        self.stack.add_titled_with_icon(connection_page, "device", "Connect",
                                         "phone-symbolic")
+        header.pack_end(self.connection_options_button)
         self.stack.add_titled_with_icon(self._partition_page(), "partitions", "Flash",
                                         "drive-harddisk-symbolic")
         self.stack.add_titled_with_icon(self._utilities_page(), "utilities", "Utilities",
                                         "applications-system-symbolic")
+        self.stack.connect("notify::visible-child-name", self._update_connection_options_visibility)
+        self._update_connection_options_visibility(self.stack, None)
 
     def open_connection_guide(self, *_args):
         """Present an animated, illustrated connection walkthrough."""
@@ -119,11 +124,11 @@ class MtkWindow(Adw.ApplicationWindow):
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         toolbar.add_top_bar(header)
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         page.set_margin_top(24)
         page.set_margin_bottom(24)
-        page.set_margin_start(28)
-        page.set_margin_end(28)
+        page.set_margin_start(24)
+        page.set_margin_end(24)
 
         intro = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         eyebrow = Gtk.Label(label="DEVICE SETUP", xalign=0)
@@ -141,13 +146,21 @@ class MtkWindow(Adw.ApplicationWindow):
         intro.append(subtitle)
         page.append(intro)
 
-        progress_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        progress_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         step_count = Gtk.Label(xalign=0)
         step_count.add_css_class("heading")
         progress_row.append(step_count)
-        progress = Gtk.ProgressBar()
-        progress.set_hexpand(True)
-        progress_row.append(progress)
+        progress_segments = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        progress_segments.set_hexpand(True)
+        progress_bars = []
+        for index in range(3):
+            segment = Gtk.ProgressBar()
+            segment.set_hexpand(True)
+            segment.set_size_request(-1, 8)
+            segment.set_accessible_role(Gtk.AccessibleRole.PROGRESS_BAR)
+            progress_segments.append(segment)
+            progress_bars.append(segment)
+        progress_row.append(progress_segments)
         page.append(progress_row)
 
         # Each page gives its original illustration room to read at a glance;
@@ -158,7 +171,7 @@ class MtkWindow(Adw.ApplicationWindow):
         slides.set_vhomogeneous(False)
 
         def slide(art_name, art_label, heading, description, extra=None):
-            layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=28)
+            layout = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
             layout.set_valign(Gtk.Align.CENTER)
 
             picture = Gtk.Picture.new_for_filename(
@@ -166,7 +179,7 @@ class MtkWindow(Adw.ApplicationWindow):
             )
             picture.set_content_fit(Gtk.ContentFit.CONTAIN)
             picture.set_can_shrink(True)
-            picture.set_size_request(260, 340)
+            picture.set_size_request(240, 320)
             picture.set_accessible_role(Gtk.AccessibleRole.IMG)
             picture.update_property([Gtk.AccessibleProperty.LABEL], [art_label])
             art_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -176,7 +189,7 @@ class MtkWindow(Adw.ApplicationWindow):
             art_card.append(picture)
             layout.append(art_card)
 
-            copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             copy.set_hexpand(True)
             copy.set_valign(Gtk.Align.CENTER)
             copy_title = Gtk.Label(label=heading, xalign=0, wrap=True)
@@ -192,10 +205,10 @@ class MtkWindow(Adw.ApplicationWindow):
 
         power_note = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         power_note.add_css_class("card")
-        power_note.set_margin_top(8)
-        power_note.set_margin_bottom(8)
-        power_note.set_margin_start(2)
-        power_note.set_margin_end(2)
+        power_note.set_margin_top(4)
+        power_note.set_margin_bottom(4)
+        power_note.set_margin_start(1)
+        power_note.set_margin_end(1)
         power_icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
         power_icon.set_valign(Gtk.Align.START)
         power_note.append(power_icon)
@@ -300,7 +313,12 @@ class MtkWindow(Adw.ApplicationWindow):
             current_step = max(0, min(index, len(slide_names) - 1))
             slides.set_visible_child_name(slide_names[current_step])
             step_count.set_text(f"STEP {current_step + 1} OF {len(slide_names)}")
-            progress.set_fraction((current_step + 1) / len(slide_names))
+            for segment_index, segment in enumerate(progress_bars):
+                segment.set_fraction(1 if segment_index <= current_step else 0)
+                segment.update_property(
+                    [Gtk.AccessibleProperty.LABEL],
+                    [f"Step {segment_index + 1} of {len(slide_names)}"],
+                )
             back_button.set_sensitive(current_step > 0)
             next_button.set_label(
                 "Start device detection" if current_step == len(slide_names) - 1 else "Next"
@@ -348,11 +366,34 @@ class MtkWindow(Adw.ApplicationWindow):
         row.add_suffix(choose_button)
         group.add(row)
         page.add(group)
+        logging_group = Adw.PreferencesGroup(
+            title="Diagnostics",
+            description="Advanced logging includes low-level USB packet details and may be verbose. Changes apply after restarting the app.",
+        )
+        self.advanced_logging_switch = Gtk.Switch(
+            active=get_advanced_logging(), valign=Gtk.Align.CENTER
+        )
+        self.advanced_logging_switch.connect("notify::active", self._advanced_logging_changed)
+        logging_row = Adw.ActionRow(
+            title="Advanced logging",
+            subtitle="Include detailed backend debug messages in Logs.",
+        )
+        logging_row.add_suffix(self.advanced_logging_switch)
+        logging_row.set_activatable_widget(self.advanced_logging_switch)
+        logging_group.add(logging_row)
+        page.add(logging_group)
         window.add(page)
         window.connect("close-request", self._preferences_closed)
         self.preferences_window = window
         self.backend_path_row = row
         window.present()
+
+    def _advanced_logging_changed(self, switch, _param):
+        try:
+            set_advanced_logging(switch.get_active())
+        except OSError as error:
+            switch.set_active(not switch.get_active())
+            self.toast_overlay.add_toast(Adw.Toast(title=f"Could not save logging preference: {error}"))
 
     def _preferences_closed(self, *_args):
         self.preferences_window = None
@@ -396,16 +437,16 @@ class MtkWindow(Adw.ApplicationWindow):
         return scroller
 
     def _connection_page(self):
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         content.set_halign(Gtk.Align.CENTER)
         content.set_valign(Gtk.Align.CENTER)
-        content.set_margin_top(32)
-        content.set_margin_bottom(32)
+        content.set_margin_top(24)
+        content.set_margin_bottom(24)
         content.set_margin_start(24)
         content.set_margin_end(24)
 
         self.connection_icon = Gtk.Image.new_from_icon_name("phone-symbolic")
-        self.connection_icon.set_pixel_size(64)
+        self.connection_icon.set_pixel_size(48)
         self.connection_icon.add_css_class("dimmed")
         content.append(self.connection_icon)
 
@@ -414,43 +455,21 @@ class MtkWindow(Adw.ApplicationWindow):
         content.append(title)
 
         self.connection_status = Gtk.Label(
-            label="Power off the phone. For bootrom, hold a volume button while connecting USB."
+            label="Connect a powered-off device to begin. The connection method depends on your device."
         )
         self.connection_status.set_wrap(True)
         self.connection_status.set_justify(Gtk.Justification.CENTER)
-        self.connection_status.set_max_width_chars(64)
+        self.connection_status.set_max_width_chars(56)
+        self.connection_status.add_css_class("dimmed")
         content.append(self.connection_status)
 
-        self.connection_help_button = Gtk.Button.new_from_icon_name("help-about-symbolic")
-        self.connection_help_button.set_tooltip_text("How to connect a device")
-        self.connection_help_button.update_property(
-            [Gtk.AccessibleProperty.LABEL], ["How to connect a device"]
-        )
+        self.connection_help_button = Gtk.Button(label="Connection guide")
+        self.connection_help_button.add_css_class("flat")
         self.connection_help_button.set_halign(Gtk.Align.CENTER)
         self.connection_help_button.connect("clicked", self.open_connection_guide)
         content.append(self.connection_help_button)
 
-        options = Adw.ExpanderRow(title="Connection options",
-                                  subtitle="Optional loader, preloader, IoT, or serial settings")
-        self.iot_switch = Adw.SwitchRow(title="IoT mode",
-                                        subtitle="Use for supported MediaTek IoT devices")
-        options.add_row(self.iot_switch)
-        self.serial_entry = Adw.EntryRow(title="Serial port (optional)")
-        self.serial_entry.set_text("")
-        options.add_row(self.serial_entry)
-        self.loader_row = Adw.ActionRow(title="Download Agent loader",
-                                        subtitle="No custom loader selected")
-        self.loader_button = Gtk.Button(label="Choose…")
-        self.loader_button.connect("clicked", lambda *_: self._choose_connection_file("loader"))
-        self.loader_row.add_suffix(self.loader_button)
-        options.add_row(self.loader_row)
-        self.preloader_row = Adw.ActionRow(title="Preloader file",
-                                           subtitle="No custom preloader selected")
-        self.preloader_button = Gtk.Button(label="Choose…")
-        self.preloader_button.connect("clicked", lambda *_: self._choose_connection_file("preloader"))
-        self.preloader_row.add_suffix(self.preloader_button)
-        options.add_row(self.preloader_row)
-        content.append(options)
+        self.connection_options_button = self._connection_options_menu()
 
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(48, 48)
@@ -471,6 +490,76 @@ class MtkWindow(Adw.ApplicationWindow):
         clamp = Adw.Clamp(maximum_size=680)
         clamp.set_child(content)
         return self._scrolled(clamp)
+
+    def _connection_options_menu(self):
+        button = Gtk.MenuButton()
+        button.set_icon_name("open-menu-symbolic")
+        button.set_tooltip_text("Connection options")
+        button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Connection options"]
+        )
+
+        popover = Gtk.Popover()
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        options.set_size_request(320, -1)
+        options.set_margin_top(16)
+        options.set_margin_bottom(16)
+        options.set_margin_start(16)
+        options.set_margin_end(16)
+
+        heading = Gtk.Label(label="Connection options", xalign=0)
+        heading.add_css_class("heading")
+        options.append(heading)
+        hint = Gtk.Label(label="Optional settings for specific devices.", xalign=0)
+        hint.add_css_class("caption")
+        hint.add_css_class("dimmed")
+        options.append(hint)
+
+        self.iot_switch = Gtk.CheckButton(label="Use IoT mode")
+        self.iot_switch.set_tooltip_text("Enable for supported MediaTek IoT devices")
+        options.append(self.iot_switch)
+
+        self.serial_entry = Gtk.Entry()
+        self.serial_entry.set_placeholder_text("Serial port (optional)")
+        self.serial_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Serial port (optional)"]
+        )
+        options.append(self.serial_entry)
+
+        for title, file_kind in (("Download Agent loader", "loader"),
+                                 ("Preloader file", "preloader")):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            copy.set_hexpand(True)
+            label = Gtk.Label(label=title, xalign=0)
+            label.add_css_class("heading")
+            status = Gtk.Label(label="Not selected", xalign=0)
+            status.add_css_class("caption")
+            status.add_css_class("dimmed")
+            status.set_ellipsize(Pango.EllipsizeMode.END)
+            copy.append(label)
+            copy.append(status)
+            choose = Gtk.Button(label="Choose…")
+            choose.connect("clicked", lambda *_args, kind=file_kind:
+                           self._choose_connection_file(kind))
+            row.append(copy)
+            row.append(choose)
+            options.append(row)
+            if file_kind == "loader":
+                self.loader_row = status
+                self.loader_button = choose
+            else:
+                self.preloader_row = status
+                self.preloader_button = choose
+
+        popover.set_child(options)
+        button.set_popover(popover)
+        return button
+
+    def _update_connection_options_visibility(self, *_args):
+        self.connection_options_button.set_visible(
+            self.stack.get_visible_child_name() == "device"
+        )
 
     @staticmethod
     def _page_column(maximum_size=920):
@@ -666,8 +755,16 @@ class MtkWindow(Adw.ApplicationWindow):
         return self._scrolled(view)
 
     def append_log(self, message):
+        message = str(message).replace("\x00", "")
+        if len(message) > 8_000:
+            message = message[:8_000] + " … [message shortened]"
         end = self.log_buffer.get_end_iter()
         self.log_buffer.insert(end, f"{time.strftime('%H:%M:%S')}  {message}\n")
+        excess = self.log_buffer.get_char_count() - MAX_LOG_CHARS
+        if excess > 0:
+            self.log_buffer.delete(
+                self.log_buffer.get_start_iter(), self.log_buffer.get_iter_at_offset(excess)
+            )
         return GLib.SOURCE_REMOVE
 
     def set_status(self, message):
@@ -685,7 +782,8 @@ class MtkWindow(Adw.ApplicationWindow):
         # MTK's config writes its log relative to the backend checkout's cwd.
         os.makedirs(os.path.join(MTKCLIENT_DIR, "logs"), exist_ok=True)
         bridge = BackendLog(self)
-        config = MtkConfig(loglevel=logging.DEBUG, gui=bridge,
+        loglevel = logging.DEBUG if get_advanced_logging() else logging.INFO
+        config = MtkConfig(loglevel=loglevel, gui=bridge,
                            guiprogress=BackendProgress(self))
         config.gpt_settings = GptSettings(gpt_num_part_entries="0",
                                           gpt_part_entry_size="0",
@@ -701,14 +799,17 @@ class MtkWindow(Adw.ApplicationWindow):
             with open(self.preloader_path, "rb") as stream:
                 config.preloader = stream.read()
         serial_port = self.serial_entry.get_text().strip() or None
-        mtk = Mtk(config=config, loglevel=logging.DEBUG, serialportname=serial_port)
-        handler = DaHandler(mtk, logging.DEBUG)
+        mtk = Mtk(config=config, loglevel=loglevel, serialportname=serial_port)
+        handler = DaHandler(mtk, loglevel)
 
-        # Keep MTK's normal StreamHandlers (terminal output) and mirror their
-        # records into Logs; the GUI callback is already forwarded by bridge.
+        # Mirror backend records into Logs without flooding the launching terminal.
         ui_handler = UiLogHandler(self)
         ui_handler.setFormatter(logging.Formatter("%(name)s - %(message)s"))
         logging.getLogger().addHandler(ui_handler)
+        # Backend logs belong in the app's Logs view, not an unbounded terminal stream.
+        for logger_handler in logging.getLogger().handlers:
+            if isinstance(logger_handler, logging.StreamHandler):
+                logger_handler.setLevel(logging.CRITICAL + 1)
         return handler
 
     def connect_backend(self):
@@ -965,7 +1066,7 @@ class MtkWindow(Adw.ApplicationWindow):
             path = dialog.get_file().get_path()
             if file_kind == "loader":
                 self.loader_path = path
-                self.loader_row.set_subtitle(path)
+                self.loader_row.set_text(path)
                 if self.backend:
                     mtk = self.backend.mtk
                     mtk.config.loader = path
@@ -973,7 +1074,7 @@ class MtkWindow(Adw.ApplicationWindow):
                     mtk.daloader.daconfig.parse_da_loader(path, mtk.daloader.daconfig.dasetup)
             else:
                 self.preloader_path = path
-                self.preloader_row.set_subtitle(path)
+                self.preloader_row.set_text(path)
                 if self.backend:
                     self.backend.mtk.config.preloader_filename = path
                     with open(path, "rb") as stream:

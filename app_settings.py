@@ -22,9 +22,23 @@ def get_backend_dir(default=None):
     return load_settings().get("backend_dir") or default
 
 
-def set_backend_dir(path):
+def get_advanced_logging(default=False):
+    return bool(load_settings().get("advanced_logging", default))
+
+
+def set_advanced_logging(enabled):
+    settings = load_settings()
+    settings["advanced_logging"] = bool(enabled)
     APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     temporary = SETTINGS_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"backend_dir": str(Path(path).expanduser().resolve())}, indent=2) + "\n",
-                                    encoding="utf-8")
+    temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(SETTINGS_FILE)
+
+
+def set_backend_dir(path):
+    settings = load_settings()
+    settings["backend_dir"] = str(Path(path).expanduser().resolve())
+    APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = SETTINGS_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     temporary.replace(SETTINGS_FILE)
