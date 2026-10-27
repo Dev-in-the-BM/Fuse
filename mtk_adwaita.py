@@ -92,12 +92,6 @@ class MtkWindow(Adw.ApplicationWindow):
         preferences_button.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences"])
         preferences_button.connect("clicked", self.open_preferences)
         header.pack_end(preferences_button)
-        help_button = Gtk.Button.new_from_icon_name("help-about-symbolic")
-        help_button.set_tooltip_text("How to connect a device")
-        help_button.update_property([Gtk.AccessibleProperty.LABEL], ["How to connect a device"])
-        help_button.connect("clicked", self.open_connection_guide)
-        header.pack_end(help_button)
-
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
         toolbar.set_content(self.stack)
@@ -427,6 +421,15 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_status.set_max_width_chars(64)
         content.append(self.connection_status)
 
+        self.connection_help_button = Gtk.Button.new_from_icon_name("help-about-symbolic")
+        self.connection_help_button.set_tooltip_text("How to connect a device")
+        self.connection_help_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["How to connect a device"]
+        )
+        self.connection_help_button.set_halign(Gtk.Align.CENTER)
+        self.connection_help_button.connect("clicked", self.open_connection_guide)
+        content.append(self.connection_help_button)
+
         options = Adw.ExpanderRow(title="Connection options",
                                   subtitle="Optional loader, preloader, IoT, or serial settings")
         self.iot_switch = Adw.SwitchRow(title="IoT mode",
@@ -450,6 +453,8 @@ class MtkWindow(Adw.ApplicationWindow):
         content.append(options)
 
         self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(48, 48)
+        self.spinner.add_css_class("connecting-spinner")
         self.spinner.set_visible(False)
         content.append(self.spinner)
 
