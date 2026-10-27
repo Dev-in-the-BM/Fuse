@@ -280,7 +280,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_search.connect("search-changed", lambda *_: self._refresh_partition_view())
         partition_controls.append(self.partition_search)
         self.partition_sort = Gtk.DropDown.new_from_strings(
-            ["Device order", "Alphabetical"]
+            ["Chip layout", "Alphabetical"]
         )
         self.partition_sort.set_tooltip_text("Sort partitions")
         self.partition_sort.connect("notify::selected", lambda *_: self._refresh_partition_view())
@@ -566,11 +566,18 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_checks.clear()
         self.partition_rows.clear()
         self.partition_images.clear()
+        self.partition_image_status = {}
         for name, size in self.partitions:
             row = Adw.ActionRow(
                 title=name,
                 subtitle=f"{self._format_size(size)} · Drop an image or choose one"
             )
+            image_status = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+            image_status.set_tooltip_text("An image is assigned to this partition")
+            image_status.update_property([Gtk.AccessibleProperty.LABEL], ["Image assigned"])
+            image_status.set_visible(False)
+            row.add_suffix(image_status)
+            self.partition_image_status[name] = image_status
             check = Gtk.CheckButton()
             check.set_valign(Gtk.Align.CENTER)
             check.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {name}"])
@@ -689,7 +696,7 @@ class MtkWindow(Adw.ApplicationWindow):
                 self._set_partition_image(name, file.get_path())
         dialog.destroy()
 
-    def _partition_file_dropped(self, _target, value, name):
+    def _partition_file_dropped(self, _target, value, _x, _y, name):
         files = value.get_files() if isinstance(value, Gdk.FileList) else []
         if len(files) == 1:
             path = files[0].get_path()
@@ -701,6 +708,7 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _set_partition_image(self, name, path):
         self.partition_images[name] = path
+        self.partition_image_status[name].set_visible(True)
         self.partition_rows[name].set_subtitle(
             f"{self._format_size(self.partition_checks[name][1])} · {os.path.basename(path)}"
         )
