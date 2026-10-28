@@ -649,6 +649,7 @@ class MtkWindow(Adw.ApplicationWindow):
                     [f"Step {segment_index + 1} of {len(slide_names)}"],
                 )
             back_button.set_sensitive(current_step > 0)
+            next_button.set_sensitive(current_step < len(slide_names) - 1)
             next_label = (
                 "Start device detection"
                 if current_step == len(slide_names) - 1 else "Next step"
