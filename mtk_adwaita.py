@@ -386,7 +386,7 @@ class MtkWindow(Adw.ApplicationWindow):
             "connect-power-off.svg",
             "Phone illustration for the first step: power off the phone.",
             "1. Power off the phone",
-            "Begin with the device fully shut down. This lets the computer catch the early boot connection instead of an already-running Android system.",
+            "Begin with the device fully shut down."
             power_note,
         ), "power")
 
@@ -542,7 +542,8 @@ class MtkWindow(Adw.ApplicationWindow):
             "connect-test-point.svg",
             "Example board with a probe touching TP1 beside a separate GND pad; not a device-specific layout.",
             "3. If it still isn’t detected",
-            "Some devices need a hardware test point to enter BootROM. The original guide marks an example point as TP1; that label and location are not universal.",
+            "Some devices need a hardware test point to enter BootROM.\n"
+            "This is more complex, and may require additional tools or expertise.",
             testpoint_note,
         ), "testpoint")
         page.append(slides)
@@ -958,7 +959,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_search.connect("search-changed", lambda *_: self._refresh_partition_view())
         partition_controls.append(self.partition_search)
         self.partition_sort = Gtk.DropDown.new_from_strings(
-            ["Chip layout", "Alphabetical"]
+            ["Chip layout", "Name"]
         )
         self.partition_sort.set_tooltip_text("Sort partitions")
         self.partition_sort.connect("notify::selected", lambda *_: self._refresh_partition_view())
