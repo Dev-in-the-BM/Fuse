@@ -1,10 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="A probe touching a marked test point on a circuit board">
-  <rect x="36" y="101" width="288" height="284" rx="28" fill="#e8e6e3" stroke="#5e5c64" stroke-width="6"/>
-  <circle cx="72" cy="137" r="8" fill="#c0bfbc"/>
-  <circle cx="288" cy="349" r="8" fill="#c0bfbc"/>
-  <circle cx="137" cy="247" r="31" fill="#99c1f1"/>
-  <circle cx="137" cy="247" r="13" fill="#3584e4" stroke="#5e5c64" stroke-width="5"/>
-  <path d="M275 130 164 226" fill="none" stroke="#5e5c64" stroke-width="10" stroke-linecap="round"/>
-  <path d="m164 226-18 14 4-21Z" fill="#3584e4" stroke="#5e5c64" stroke-width="4" stroke-linejoin="round"/>
-  <text x="187" y="278" font-family="sans-serif" font-size="22" font-weight="600" letter-spacing="1" fill="#3d3846">TP1</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="Example circuit board with a probe touching TP1 beside a separate ground pad">
+  <rect x="25" y="76" width="310" height="330" rx="24" fill="#e8e6e3" stroke="#5e5c64" stroke-width="6"/>
+  <circle cx="49" cy="100" r="7" fill="#c0bfbc"/>
+  <circle cx="311" cy="100" r="7" fill="#c0bfbc"/>
+  <circle cx="49" cy="382" r="7" fill="#c0bfbc"/>
+  <circle cx="311" cy="382" r="7" fill="#c0bfbc"/>
+
+  <g fill="none" stroke="#9a9996" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M65 340h34v-28h12"/>
+    <path d="M239 173h32v26h28"/>
+    <path d="M241 247h47v27"/>
+    <path d="M241 324h20"/>
+  </g>
+
+  <rect x="130" y="135" width="112" height="112" rx="10" fill="#deddda" stroke="#5e5c64" stroke-width="6"/>
+  <rect x="151" y="156" width="70" height="70" rx="5" fill="#f6f5f4" stroke="#9a9996" stroke-width="4"/>
+  <g stroke="#5e5c64" stroke-width="5" stroke-linecap="round">
+    <path d="M141 123v12M157 123v12M173 123v12M189 123v12M205 123v12M221 123v12"/>
+    <path d="M141 247v12M157 247v12M173 247v12M189 247v12M205 247v12M221 247v12"/>
+  </g>
+
+  <circle cx="105" cy="286" r="14" fill="#3584e4" stroke="#5e5c64" stroke-width="5"/>
+  <circle cx="105" cy="286" r="4" fill="#f6f5f4"/>
+  <path d="M88 286H62" fill="none" stroke="#5e5c64" stroke-width="4" stroke-linecap="round"/>
+  <text x="45" y="278" font-family="sans-serif" font-size="20" font-weight="700" fill="#3d3846">TP1</text>
+
+  <circle cx="278" cy="324" r="13" fill="#c0bfbc" stroke="#5e5c64" stroke-width="5"/>
+  <circle cx="278" cy="324" r="4" fill="#5e5c64"/>
+  <path d="M278 337v12m-13 0h26m-21 7h16m-11 7h6" fill="none" stroke="#5e5c64" stroke-width="4" stroke-linecap="round"/>
+  <text x="246" y="382" font-family="sans-serif" font-size="18" font-weight="700" fill="#3d3846">GND</text>
+
+  <path d="m48 108 40 148" fill="none" stroke="#5e5c64" stroke-width="20" stroke-linecap="round"/>
+  <path d="m48 108 40 148" fill="none" stroke="#9a9996" stroke-width="11" stroke-linecap="round"/>
+  <path d="m88 256 13 26" fill="none" stroke="#3584e4" stroke-width="7" stroke-linecap="round"/>
+  <path d="m101 282 4 4" fill="none" stroke="#5e5c64" stroke-width="4" stroke-linecap="round"/>
 </svg>

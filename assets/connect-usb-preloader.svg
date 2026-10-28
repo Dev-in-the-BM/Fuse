@@ -7,10 +7,15 @@
     <path d="M74 145h9v45h-9" fill="#9a9996" stroke="#9a9996"/>
     <path d="M74 205h9v45h-9" fill="#9a9996" stroke="#9a9996"/>
     <path d="M277 162h9v48h-9" fill="#deddda"/>
-    <path d="M180 404v28" fill="none" stroke="#3584e4"/>
-    <path d="M164 432h32v14h-32z" fill="#3584e4" stroke="#3584e4"/>
+    <rect x="165" y="397" width="30" height="7" rx="3.5" fill="#5e5c64" stroke="none"/>
   </g>
-  <path d="M180 446v10c0 10 8 17 18 17h27" fill="none" stroke="#3584e4" stroke-width="6" stroke-linecap="round"/>
-  <circle cx="225" cy="473" r="6" fill="#3584e4"/>
   <path d="M103 161h-17M103 221h-17" fill="none" stroke="#f6f5f4" stroke-width="4" stroke-linecap="round"/>
+  <path id="usb-cable" d="M240 461 C240 473 257 464 340 464" fill="none" stroke="#5e5c64" stroke-width="12" stroke-linecap="round"/>
+  <path id="usb-cable-highlight" d="M240 461 C240 473 257 464 340 464" fill="none" stroke="#9a9996" stroke-width="4" stroke-linecap="round"/>
+  <g id="usb-plug" transform="translate(60 30)" stroke="#5e5c64" stroke-width="4" stroke-linejoin="round">
+    <rect x="162" y="406" width="36" height="20" rx="5" fill="#deddda"/>
+    <path d="M169 409v-13c0-3 2-5 5-5h10c3 0 5 2 5 5v13" fill="#c0bfbc"/>
+    <path d="M174 396h10" fill="none" stroke="#9a9996" stroke-width="3"/>
+    <rect x="166" y="422" width="28" height="8" rx="4" fill="#9a9996" stroke="none"/>
+  </g>
 </svg>

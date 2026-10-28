@@ -173,9 +173,12 @@ class MtkWindow(Adw.ApplicationWindow):
 
         art_pictures = []
         mode_pictures = []
+        preview_pictures = []
         preview_popovers = []
         hover_close_sources = []
-        pulse_phase = False
+        animation_values = {"cable": 1.0, "press": 1.0}
+        animation_started_at = None
+        illustration_sources = {}
         style_manager = Adw.StyleManager.get_default()
         art_palettes = {
             False: {
@@ -193,15 +196,16 @@ class MtkWindow(Adw.ApplicationWindow):
         }
 
         def render_illustration(
-            picture, art_name, pulse=False, raster_size=(720, 960)
+            picture, art_name, cable_progress=1.0, press_progress=0.0,
+            raster_size=(720, 960),
         ):
             dark = style_manager.get_dark()
             palette = dict(art_palettes[dark])
-            if pulse and pulse_phase:
-                palette["accent"] = "#a8d0fb" if dark else "#6ba8f0"
-            path = os.path.join(APP_DIR, "assets", art_name)
-            with open(path, "rb") as svg_file:
-                svg = svg_file.read().decode("utf-8")
+            if art_name not in illustration_sources:
+                path = os.path.join(APP_DIR, "assets", art_name)
+                with open(path, "rb") as svg_file:
+                    illustration_sources[art_name] = svg_file.read().decode("utf-8")
+            svg = illustration_sources[art_name]
             color_map = {
                 light_value: palette[name]
                 for name, light_value in art_palettes[False].items()
@@ -211,6 +215,45 @@ class MtkWindow(Adw.ApplicationWindow):
                 lambda match: color_map.get(match.group(0), match.group(0)),
                 svg,
             )
+            if art_name in (
+                "connect-usb-buttons.svg", "connect-usb-preloader.svg"
+            ):
+                cable_progress = max(0.0, min(1.0, cable_progress))
+                plug_x = 60 * (1 - cable_progress)
+                plug_y = 30 * (1 - cable_progress)
+                cable_start_x = 180 + plug_x
+                cable_start_y = 430 + plug_y
+                cable_control_x = 230 + plug_x * 0.45
+                cable_path = (
+                    f"M{cable_start_x:.2f} {cable_start_y:.2f} "
+                    f"C{cable_start_x:.2f} {cable_start_y + 14:.2f} "
+                    f"{cable_control_x:.2f} 464 340 464"
+                )
+                for cable_id in ("usb-cable", "usb-cable-highlight"):
+                    svg = re.sub(
+                        rf'(<path id="{cable_id}" d=")[^"]+(" )',
+                        lambda match: (
+                            f'{match.group(1)}{cable_path}{match.group(2)}'
+                        ),
+                        svg,
+                    )
+                svg = re.sub(
+                    r'(<g id="usb-plug" transform="translate\()[^"]+(" )',
+                    lambda match: (
+                        f'{match.group(1)}{plug_x:.2f} {plug_y:.2f}'
+                        f'{match.group(2)}'
+                    ),
+                    svg,
+                )
+            if art_name == "connect-usb-buttons.svg":
+                press_offset = -4 + 4 * max(0.0, min(1.0, press_progress))
+                svg = re.sub(
+                    r'(<g id="button-cues" transform="translate\()[^"]+(" )',
+                    lambda match: (
+                        f'{match.group(1)}{press_offset:.2f} 0{match.group(2)}'
+                    ),
+                    svg,
+                )
             loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
             loader.set_size(*raster_size)
             loader.write(svg.encode("utf-8"))
@@ -219,21 +262,68 @@ class MtkWindow(Adw.ApplicationWindow):
 
         def update_illustration_theme(*_args):
             for picture, art_name, raster_size in art_pictures:
+                is_mode_picture = any(
+                    mode_picture is picture
+                    for mode_picture, _, _ in mode_pictures
+                )
                 render_illustration(
                     picture, art_name,
-                    pulse=any(mode_picture is picture
-                              for mode_picture, _, _ in mode_pictures) and pulse_phase,
+                    cable_progress=(
+                        animation_values["cable"]
+                        if is_mode_picture else 1.0
+                    ),
+                    press_progress=(
+                        animation_values["press"]
+                        if is_mode_picture else 1.0
+                    ),
                     raster_size=raster_size,
                 )
 
-        def pulse_mode_actions():
-            nonlocal pulse_phase
+        def animate_mode_actions():
+            nonlocal animation_started_at
             if slides.get_visible_child_name() != "mode":
                 return GLib.SOURCE_CONTINUE
-            pulse_phase = not pulse_phase
+            now = GLib.get_monotonic_time()
+            if animation_started_at is None:
+                animation_started_at = now
+            cycle = ((now - animation_started_at) / 1_000_000) % 3.6
+
+            def ease(progress):
+                progress = max(0.0, min(1.0, progress))
+                return progress * progress * (3 - 2 * progress)
+
+            if cycle < 0.45:
+                cable_progress = 0.0
+            elif cycle < 1.15:
+                cable_progress = ease((cycle - 0.45) / 0.7)
+            elif cycle < 2.15:
+                cable_progress = 1.0
+            elif cycle < 2.85:
+                cable_progress = 1.0 - ease((cycle - 2.15) / 0.7)
+            else:
+                cable_progress = 0.0
+
+            if cycle < 0.35:
+                press_progress = ease(cycle / 0.35)
+            elif cycle < 2.55:
+                press_progress = 1.0
+            elif cycle < 2.95:
+                press_progress = 1.0 - ease((cycle - 2.55) / 0.4)
+            else:
+                press_progress = 0.0
+
+            animation_values["cable"] = cable_progress
+            animation_values["press"] = press_progress
             for picture, art_name, raster_size in mode_pictures:
+                if picture in preview_pictures:
+                    popover = picture.get_parent()
+                    if not popover or not popover.get_visible():
+                        continue
                 render_illustration(
-                    picture, art_name, pulse=True, raster_size=raster_size
+                    picture, art_name,
+                    cable_progress=cable_progress,
+                    press_progress=press_progress,
+                    raster_size=raster_size,
                 )
             return GLib.SOURCE_CONTINUE
 
@@ -305,6 +395,9 @@ class MtkWindow(Adw.ApplicationWindow):
         animations_enabled = bool(
             settings and settings.get_property("gtk-enable-animations")
         )
+        initial_motion = 0.0 if animations_enabled else 1.0
+        animation_values["cable"] = initial_motion
+        animation_values["press"] = initial_motion
         for art_name, mode_title, mode_body in (
             ("connect-usb-buttons.svg", "BootROM mode", "Press and hold Volume Up, Volume Down, or the button combination for your model. Keep holding while you plug in USB. Some devices need both volume buttons or all hardware buttons."),
             ("connect-usb-preloader.svg", "Preloader mode", "With the phone off, plug in USB without holding any hardware buttons."),
@@ -316,21 +409,26 @@ class MtkWindow(Adw.ApplicationWindow):
             mode_picture = Gtk.Picture()
             mode_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
             mode_picture.set_can_shrink(True)
-            mode_picture.set_size_request(96, 128)
+            mode_picture.set_size_request(120, 160)
             mode_picture.set_accessible_role(Gtk.AccessibleRole.IMG)
             mode_picture.set_cursor_from_name("zoom-in")
             mode_picture.set_tooltip_text("Hover to enlarge")
             mode_art_label = (
-                "BootROM mode: volume buttons highlighted; USB cable muted"
+                "BootROM mode: volume buttons held while the USB plug moves into the phone"
                 if mode_title == "BootROM mode"
-                else "Preloader mode: USB cable highlighted; hardware buttons muted"
+                else "Preloader mode: USB plug moves into the phone; no buttons are held"
             )
             mode_picture.update_property(
                 [Gtk.AccessibleProperty.LABEL], [mode_art_label]
             )
-            art_pictures.append((mode_picture, art_name, (720, 960)))
-            mode_pictures.append((mode_picture, art_name, (720, 960)))
-            render_illustration(mode_picture, art_name)
+            art_pictures.append((mode_picture, art_name, (360, 480)))
+            mode_pictures.append((mode_picture, art_name, (360, 480)))
+            render_illustration(
+                mode_picture, art_name,
+                cable_progress=initial_motion,
+                press_progress=initial_motion,
+                raster_size=(360, 480),
+            )
             mode_card.append(mode_picture)
 
             preview_picture = Gtk.Picture()
@@ -343,7 +441,13 @@ class MtkWindow(Adw.ApplicationWindow):
             )
             art_pictures.append((preview_picture, art_name, (240, 320)))
             mode_pictures.append((preview_picture, art_name, (240, 320)))
-            render_illustration(preview_picture, art_name, raster_size=(240, 320))
+            preview_pictures.append(preview_picture)
+            render_illustration(
+                preview_picture, art_name,
+                cable_progress=initial_motion,
+                press_progress=initial_motion,
+                raster_size=(240, 320),
+            )
 
             preview_popover = Gtk.Popover()
             preview_popover.set_has_arrow(False)
@@ -410,10 +514,6 @@ class MtkWindow(Adw.ApplicationWindow):
             "The right method depends on the phone. Try the mode requested by your device or its service instructions.",
             mode_cards,
         ), "mode")
-        if animations_enabled:
-            self._connection_guide_pulse_source = GLib.timeout_add(
-                900, pulse_mode_actions
-            )
         self._connection_guide_hover_sources = hover_close_sources
         self._connection_guide_popovers = preview_popovers
 
@@ -440,46 +540,118 @@ class MtkWindow(Adw.ApplicationWindow):
         testpoint_note.append(warning_copy)
         slides.add_named(slide(
             "connect-test-point.svg",
-            "Close-up illustration of a circuit-board test point marked TP1.",
+            "Example board with a probe touching TP1 beside a separate GND pad; not a device-specific layout.",
             "3. If it still isn’t detected",
             "Some devices need a hardware test point to enter BootROM. The original guide marks an example point as TP1; that label and location are not universal.",
             testpoint_note,
         ), "testpoint")
         page.append(slides)
 
-        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        back_button = Gtk.Button(label="Back")
-        next_button = Gtk.Button(label="Next")
-        next_button.add_css_class("suggested-action")
-        actions.append(back_button)
-        spacer = Gtk.Box()
-        spacer.set_hexpand(True)
-        actions.append(spacer)
-        close_button = Gtk.Button(label="Close guide")
-        actions.append(close_button)
-        actions.append(next_button)
+        actions = Gtk.Overlay()
+        arrow_actions = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8
+        )
+        arrow_actions.set_halign(Gtk.Align.CENTER)
+        center_actions = Gtk.CenterBox()
+        center_actions.set_hexpand(True)
+        center_actions.set_center_widget(arrow_actions)
+        actions.set_child(center_actions)
+        actions.set_hexpand(True)
+        back_button = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        back_button.set_tooltip_text("Previous step")
+        back_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Previous step"]
+        )
+        back_button.set_size_request(44, 44)
+        next_button = Gtk.Button.new_from_icon_name("go-next-symbolic")
+        next_button.set_tooltip_text("Next step")
+        next_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Next step"]
+        )
+        next_button.set_size_request(44, 44)
+        arrow_actions.append(back_button)
+        arrow_actions.append(next_button)
+        done_button = Gtk.Button(label="Done")
+        done_button.add_css_class("suggested-action")
+        done_button.set_halign(Gtk.Align.END)
+        done_button.set_valign(Gtk.Align.CENTER)
+        actions.add_overlay(done_button)
         page.append(actions)
 
         slide_names = ("power", "mode", "testpoint")
         current_step = 0
+        progress_sources = [None] * len(progress_bars)
+        self._connection_guide_progress_sources = progress_sources
+
+        def animate_progress(segment_index, target):
+            source_id = progress_sources[segment_index]
+            if source_id:
+                GLib.source_remove(source_id)
+                progress_sources[segment_index] = None
+
+            segment = progress_bars[segment_index]
+            start = segment.get_fraction()
+            if not animations_enabled:
+                segment.set_fraction(target)
+                return
+
+            started_at = GLib.get_monotonic_time()
+            duration_us = 300_000
+
+            def update_progress():
+                elapsed = GLib.get_monotonic_time() - started_at
+                progress = min(1.0, elapsed / duration_us)
+                eased = 1 - (1 - progress) ** 3
+                segment.set_fraction(start + (target - start) * eased)
+                if progress >= 1:
+                    progress_sources[segment_index] = None
+                    return GLib.SOURCE_REMOVE
+                return GLib.SOURCE_CONTINUE
+
+            progress_sources[segment_index] = GLib.timeout_add(
+                16, update_progress
+            )
 
         def show_step(index):
-            nonlocal current_step
+            nonlocal current_step, animation_started_at
             current_step = max(0, min(index, len(slide_names) - 1))
             if current_step != 1:
                 for popover in preview_popovers:
                     popover.popdown()
             slides.set_visible_child_name(slide_names[current_step])
+            animation_source = getattr(
+                self, "_connection_guide_animation_source", None
+            )
+            if current_step == 1 and animations_enabled:
+                if not animation_source:
+                    animation_started_at = GLib.get_monotonic_time()
+                    animate_mode_actions()
+                    self._connection_guide_animation_source = GLib.timeout_add(
+                        33, animate_mode_actions
+                    )
+            else:
+                if animation_source:
+                    GLib.source_remove(animation_source)
+                    self._connection_guide_animation_source = None
+                animation_started_at = None
             step_count.set_text(f"STEP {current_step + 1} OF {len(slide_names)}")
             for segment_index, segment in enumerate(progress_bars):
-                segment.set_fraction(1 if segment_index <= current_step else 0)
+                animate_progress(
+                    segment_index,
+                    1 if segment_index <= current_step else 0,
+                )
                 segment.update_property(
                     [Gtk.AccessibleProperty.LABEL],
                     [f"Step {segment_index + 1} of {len(slide_names)}"],
                 )
             back_button.set_sensitive(current_step > 0)
-            next_button.set_label(
-                "Start device detection" if current_step == len(slide_names) - 1 else "Next"
+            next_label = (
+                "Start device detection"
+                if current_step == len(slide_names) - 1 else "Next step"
+            )
+            next_button.set_tooltip_text(next_label)
+            next_button.update_property(
+                [Gtk.AccessibleProperty.LABEL], [next_label]
             )
 
         def advance(*_args):
@@ -491,7 +663,7 @@ class MtkWindow(Adw.ApplicationWindow):
 
         back_button.connect("clicked", lambda *_: show_step(current_step - 1))
         next_button.connect("clicked", advance)
-        close_button.connect("clicked", lambda *_: window.close())
+        done_button.connect("clicked", lambda *_: window.close())
         show_step(0)
 
         clamp = Adw.Clamp(maximum_size=860)
@@ -503,9 +675,15 @@ class MtkWindow(Adw.ApplicationWindow):
         window.present()
 
     def _connection_guide_closed(self, *_args):
-        if getattr(self, "_connection_guide_pulse_source", None):
-            GLib.source_remove(self._connection_guide_pulse_source)
-            self._connection_guide_pulse_source = None
+        if getattr(self, "_connection_guide_animation_source", None):
+            GLib.source_remove(self._connection_guide_animation_source)
+            self._connection_guide_animation_source = None
+        for source_id in getattr(
+            self, "_connection_guide_progress_sources", []
+        ):
+            if source_id:
+                GLib.source_remove(source_id)
+        self._connection_guide_progress_sources = []
         for source in getattr(self, "_connection_guide_hover_sources", []):
             if source[0]:
                 GLib.source_remove(source[0])
