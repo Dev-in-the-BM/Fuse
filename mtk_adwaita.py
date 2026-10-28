@@ -375,7 +375,9 @@ class MtkWindow(Adw.ApplicationWindow):
         power_icon.set_valign(Gtk.Align.START)
         power_note.append(power_icon)
         power_note_text = Gtk.Label(
-            label="A dark screen is not always powered off. Disconnect the cable first; if the phone is frozen, hold Power until it shuts down.",
+            label="A dark screen is not always powered off.\n"
+            "Disconnect the cable first. \n"
+            "If the phone is frozen, hold Power until it shuts down.",
             xalign=0, wrap=True,
         )
         power_note_text.set_margin_top(12)
@@ -386,7 +388,7 @@ class MtkWindow(Adw.ApplicationWindow):
             "connect-power-off.svg",
             "Phone illustration for the first step: power off the phone.",
             "1. Power off the phone",
-            "Begin with the device fully shut down."
+            "Begin with the device fully shut down.",
             power_note,
         ), "power")
 
@@ -532,7 +534,7 @@ class MtkWindow(Adw.ApplicationWindow):
         warning_title.add_css_class("heading")
         warning_copy.append(warning_title)
         warning_body = Gtk.Label(
-            label="Test-point locations differ by model. Short only the documented point to ground while connecting USB. The wrong pads can damage the device; do not guess.",
+            label="Test-point locations differ by model. Short only the documented point to ground while connecting USB. The wrong pads can damage the device, so don't try guessing them yourself.",
             xalign=0, wrap=True,
         )
         warning_body.add_css_class("dimmed")
@@ -542,8 +544,9 @@ class MtkWindow(Adw.ApplicationWindow):
             "connect-test-point.svg",
             "Example board with a probe touching TP1 beside a separate GND pad; not a device-specific layout.",
             "3. If it still isn’t detected",
-            "Some devices need a hardware test point to enter BootROM.\n"
-            "This is more complex, and may require additional tools or expertise.",
+            "Some devices need shorting a hardware test point to enter BootROM.\n"
+            "This is more complex, and may require additional tools or expertise.\n"
+            "You will probably have to research the specific test point for your device.",
             testpoint_note,
         ), "testpoint")
         page.append(slides)
