@@ -26,19 +26,35 @@ def get_advanced_logging(default=False):
     return bool(load_settings().get("advanced_logging", default))
 
 
-def set_advanced_logging(enabled):
-    settings = load_settings()
-    settings["advanced_logging"] = bool(enabled)
+def get_pinned_partitions():
+    value = load_settings().get("pinned_partitions", [])
+    if not isinstance(value, list):
+        return []
+    return [str(name) for name in value if isinstance(name, str)]
+
+
+def _save_settings(settings):
     APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     temporary = SETTINGS_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     temporary.replace(SETTINGS_FILE)
+
+
+def set_advanced_logging(enabled):
+    settings = load_settings()
+    settings["advanced_logging"] = bool(enabled)
+    _save_settings(settings)
 
 
 def set_backend_dir(path):
     settings = load_settings()
     settings["backend_dir"] = str(Path(path).expanduser().resolve())
-    APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = SETTINGS_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(SETTINGS_FILE)
+    _save_settings(settings)
+
+
+def set_pinned_partitions(names):
+    settings = load_settings()
+    settings["pinned_partitions"] = sorted(
+        {str(name) for name in names if str(name)}, key=str.casefold
+    )
+    _save_settings(settings)

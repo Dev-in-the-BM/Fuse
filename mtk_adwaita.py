@@ -10,7 +10,8 @@ import time
 from types import SimpleNamespace
 
 from app_settings import (get_advanced_logging, get_backend_dir,
-                          set_advanced_logging, set_backend_dir)
+                          get_pinned_partitions, set_advanced_logging,
+                          set_backend_dir, set_pinned_partitions)
 
 import gi
 
@@ -79,38 +80,66 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partitions = []
         self.partition_checks = {}
         self.partition_rows = {}
+        self.partition_pin_status = {}
         self.partition_images = {}
+        self.pinned_partitions = set(get_pinned_partitions())
         self.log_buffer = Gtk.TextBuffer()
 
-        header = Adw.HeaderBar()
+        # One shared context menu pins the partition that was right-clicked.
+        self._partition_menu_target = None
+        self._partition_menu_popover = Gtk.PopoverMenu()
+        self._partition_menu_popover.set_has_arrow(False)
+        # Keep the popover anchored after closing; unparenting from "closed"
+        # races the menu item's action dispatch and makes the item a no-op.
+        menu_actions = Gio.SimpleActionGroup()
+        pin_action = Gio.SimpleAction.new("toggle-pin", None)
+        pin_action.connect("activate", self._toggle_partition_pin_action)
+        menu_actions.add_action(pin_action)
+        self._partition_menu_popover.insert_action_group("row", menu_actions)
+
+        self.header = Adw.HeaderBar()
         self.stack = Adw.ViewStack()
         self.stack.set_vhomogeneous(False)
-        switcher = Adw.ViewSwitcher()
-        switcher.set_stack(self.stack)
-        switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        header.set_title_widget(switcher)
-        preferences_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
-        preferences_button.set_tooltip_text("Preferences")
-        preferences_button.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences"])
-        preferences_button.connect("clicked", self.open_preferences)
-        header.pack_end(preferences_button)
+        self.switcher = Adw.ViewSwitcher()
+        self.switcher.set_stack(self.stack)
+        self.switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        self.header.set_title_widget(self.switcher)
+        self.navigation_button = self._navigation_menu()
+        self.header.pack_end(self.navigation_button)
         toolbar = Adw.ToolbarView()
-        toolbar.add_top_bar(header)
+        toolbar.add_top_bar(self.header)
         toolbar.set_content(self.stack)
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(toolbar)
         self.set_content(self.toast_overlay)
 
+        # Build connection settings before the user can start backend setup.
+        self.connection_options_row = self._connection_options_panel()
         connection_page = self._connection_page()
-        self.stack.add_titled_with_icon(connection_page, "device", "Connect",
-                                        "phone-symbolic")
-        header.pack_end(self.connection_options_button)
+        self.stack.add_named(connection_page, "device")
         self.stack.add_titled_with_icon(self._partition_page(), "partitions", "Flash",
                                         "drive-harddisk-symbolic")
         self.stack.add_titled_with_icon(self._utilities_page(), "utilities", "Utilities",
                                         "applications-system-symbolic")
-        self.stack.connect("notify::visible-child-name", self._update_connection_options_visibility)
-        self._update_connection_options_visibility(self.stack, None)
+        self.stack.add_named(self._logs_page(), "logs")
+        self.stack.set_visible_child_name("device")
+        self._update_navigation_visibility()
+
+        # Ctrl+F reveals the Flash page and focuses its search field from anywhere
+        # in the window, matching the shortcut users expect from searchable lists.
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.set_scope(Gtk.ShortcutScope.GLOBAL)
+        shortcuts.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control>f"),
+            Gtk.CallbackAction.new(self.focus_partition_search),
+        ))
+        self.add_controller(shortcuts)
+
+    def focus_partition_search(self, *_args):
+        self.stack.set_visible_child_name("partitions")
+        self.partition_search.grab_focus()
+        self.partition_search.select_region(0, -1)
+        return True
 
     def open_connection_guide(self, *_args):
         """Present an animated, illustrated connection walkthrough."""
@@ -822,13 +851,17 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_status.add_css_class("dimmed")
         content.append(self.connection_status)
 
-        self.connection_help_button = Gtk.Button(label="Connection guide")
-        self.connection_help_button.add_css_class("flat")
+        self.connection_help_button = Gtk.Button.new_from_icon_name(
+            "dialog-question-symbolic"
+        )
+        self.connection_help_button.set_tooltip_text("Connection guide")
+        self.connection_help_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Open connection guide"]
+        )
+        self.connection_help_button.add_css_class("circular")
         self.connection_help_button.set_halign(Gtk.Align.CENTER)
         self.connection_help_button.connect("clicked", self.open_connection_guide)
         content.append(self.connection_help_button)
-
-        self.connection_options_button = self._connection_options_menu()
 
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(48, 48)
@@ -836,11 +869,25 @@ class MtkWindow(Adw.ApplicationWindow):
         self.spinner.set_visible(False)
         content.append(self.spinner)
 
+        # Separate the primary action from the introductory content and help.
+        content.set_spacing(20)
+        content.set_margin_top(40)
+        content.set_margin_bottom(40)
+        spacer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        spacer.set_size_request(-1, 12)
+        content.append(spacer)
+
         self.connect_button = Gtk.Button(label="Start device detection")
         self.connect_button.add_css_class("suggested-action")
         self.connect_button.set_halign(Gtk.Align.CENTER)
+        self.connect_button.add_css_class("pill")
+        self.connect_button.set_size_request(240, 52)
         self.connect_button.connect("clicked", lambda *_: self.connect_backend())
         content.append(self.connect_button)
+
+        connection_options_group = Adw.PreferencesGroup()
+        connection_options_group.add(self.connection_options_row)
+        content.append(connection_options_group)
 
         self.device_details = Gtk.Label()
         self.device_details.add_css_class("dimmed")
@@ -850,75 +897,69 @@ class MtkWindow(Adw.ApplicationWindow):
         clamp.set_child(content)
         return self._scrolled(clamp)
 
-    def _connection_options_menu(self):
-        button = Gtk.MenuButton()
-        button.set_icon_name("open-menu-symbolic")
-        button.set_tooltip_text("Connection options")
-        button.update_property(
-            [Gtk.AccessibleProperty.LABEL], ["Connection options"]
+    def _connection_options_panel(self):
+        expander = Adw.ExpanderRow(
+            title="Connection settings",
+            subtitle="IoT mode, serial port, loader and preloader",
         )
+        self.iot_switch = Adw.SwitchRow(title="Use IoT mode")
+        self.iot_switch.set_subtitle("Enable for supported MediaTek IoT devices")
+        expander.add_row(self.iot_switch)
 
-        popover = Gtk.Popover()
-        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        options.set_size_request(320, -1)
-        options.set_margin_top(16)
-        options.set_margin_bottom(16)
-        options.set_margin_start(16)
-        options.set_margin_end(16)
-
-        heading = Gtk.Label(label="Connection options", xalign=0)
-        heading.add_css_class("heading")
-        options.append(heading)
-        hint = Gtk.Label(label="Optional settings for specific devices.", xalign=0)
-        hint.add_css_class("caption")
-        hint.add_css_class("dimmed")
-        options.append(hint)
-
-        self.iot_switch = Gtk.CheckButton(label="Use IoT mode")
-        self.iot_switch.set_tooltip_text("Enable for supported MediaTek IoT devices")
-        options.append(self.iot_switch)
-
-        self.serial_entry = Gtk.Entry()
-        self.serial_entry.set_placeholder_text("Serial port (optional)")
-        self.serial_entry.update_property(
-            [Gtk.AccessibleProperty.LABEL], ["Serial port (optional)"]
-        )
-        options.append(self.serial_entry)
+        self.serial_entry = Adw.EntryRow(title="Serial port (optional)")
+        expander.add_row(self.serial_entry)
 
         for title, file_kind in (("Download Agent loader", "loader"),
                                  ("Preloader file", "preloader")):
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            copy.set_hexpand(True)
-            label = Gtk.Label(label=title, xalign=0)
-            label.add_css_class("heading")
-            status = Gtk.Label(label="Not selected", xalign=0)
-            status.add_css_class("caption")
-            status.add_css_class("dimmed")
-            status.set_ellipsize(Pango.EllipsizeMode.END)
-            copy.append(label)
-            copy.append(status)
+            row = Adw.ActionRow(title=title, subtitle="Not selected")
             choose = Gtk.Button(label="Choose…")
+            choose.set_valign(Gtk.Align.CENTER)
             choose.connect("clicked", lambda *_args, kind=file_kind:
                            self._choose_connection_file(kind))
-            row.append(copy)
-            row.append(choose)
-            options.append(row)
+            row.add_suffix(choose)
+            expander.add_row(row)
             if file_kind == "loader":
-                self.loader_row = status
+                self.loader_row = row
                 self.loader_button = choose
             else:
-                self.preloader_row = status
+                self.preloader_row = row
                 self.preloader_button = choose
 
-        popover.set_child(options)
-        button.set_popover(popover)
+        return expander
+
+    def _navigation_menu(self):
+        button = Gtk.MenuButton()
+        button.set_icon_name("open-menu-symbolic")
+        button.set_tooltip_text("Main menu")
+        button.update_property([Gtk.AccessibleProperty.LABEL], ["Main menu"])
+        menu = Gio.Menu()
+        menu.append("Connect", "win.show-connect")
+        menu.append("Logs", "win.show-logs")
+        menu.append("Settings", "win.show-settings")
+        actions = Gio.SimpleActionGroup()
+        for name, callback in (
+            ("show-connect", lambda *_: self.show_page("device")),
+            ("show-logs", lambda *_: self.show_page("logs")),
+            ("show-settings", self.open_preferences),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            actions.add_action(action)
+        self.insert_action_group("win", actions)
+        button.set_menu_model(menu)
         return button
 
-    def _update_connection_options_visibility(self, *_args):
-        self.connection_options_button.set_visible(
-            self.stack.get_visible_child_name() == "device"
-        )
+    def show_page(self, name):
+        if name == "device" or self.device_connected:
+            self.stack.set_visible_child_name(name)
+
+    def _update_navigation_visibility(self):
+        connected = self.device_connected
+        self.header.set_visible(connected)
+        self.switcher.set_visible(connected)
+        self.navigation_button.set_visible(connected)
+        if not connected:
+            self.stack.set_visible_child_name("device")
 
     @staticmethod
     def _page_column(maximum_size=920):
@@ -960,6 +1001,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_search.set_placeholder_text("Search partitions")
         self.partition_search.set_accessible_role(Gtk.AccessibleRole.SEARCH_BOX)
         self.partition_search.set_hexpand(True)
+        self.partition_search.set_tooltip_text("Search partitions (Ctrl+F)")
         self.partition_search.connect("search-changed", lambda *_: self._refresh_partition_view())
         partition_controls.append(self.partition_search)
         self.partition_sort = Gtk.DropDown.new_from_strings(
@@ -1061,44 +1103,37 @@ class MtkWindow(Adw.ApplicationWindow):
         self.tools_progress.set_show_text(True)
         self.tools_progress.set_visible(False)
         box.append(self.tools_progress)
-        security_group = Adw.PreferencesGroup(title="Security tools")
-        security_group.set_description("Keys are saved locally. Lock state changes may affect device data.")
+        tools_group = Adw.PreferencesGroup(title="Device tools")
+        tools_group.set_description("Keys are saved locally. Lock state changes may affect device data.")
+        tools_group.set_vexpand(False)
         self.key_button = Gtk.Button(label="Generate keys…")
         self.key_button.set_sensitive(False)
         self.key_button.connect("clicked", lambda *_: self._choose_key_directory())
         key_row = Adw.ActionRow(title="Device keys",
                                 subtitle="Generate and save keys to a selected folder.")
         key_row.add_suffix(self.key_button)
-        security_group.add(key_row)
-        security_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
-        security_buttons.set_halign(Gtk.Align.END)
+        tools_group.add(key_row)
         self.unlock_button = Gtk.Button(label="Unlock bootloader…")
         self.unlock_button.set_sensitive(False)
         self.unlock_button.connect("clicked", lambda *_: self._confirm_lock_action("unlock"))
         self.lock_button = Gtk.Button(label="Lock bootloader…")
         self.lock_button.set_sensitive(False)
         self.lock_button.connect("clicked", lambda *_: self._confirm_lock_action("lock"))
+        lock_row = Adw.ActionRow(title="Bootloader", subtitle="Changing lock state can erase device data.")
+        lock_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+        lock_actions.set_valign(Gtk.Align.CENTER)
         for button in (self.unlock_button, self.lock_button):
-            security_buttons.append(button)
-        security_group.add(security_buttons)
-        box.append(security_group)
+            button.set_valign(Gtk.Align.CENTER)
+            lock_actions.append(button)
+        lock_row.add_suffix(lock_actions)
+        tools_group.add(lock_row)
+        box.append(tools_group)
         return self._scrolled(clamp)
 
     def _utilities_page(self):
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.utility_stack = Adw.ViewStack()
-        self.utility_stack.set_vhomogeneous(False)
-        self.utility_stack.add_titled_with_icon(self._tools_page(), "security", "Security",
-                                                "changes-prevent-symbolic")
-        self.utility_stack.add_titled_with_icon(self._logs_page(), "logs", "Logs",
-                                                "text-x-generic-symbolic")
-        switcher = Adw.ViewSwitcher()
-        switcher.set_stack(self.utility_stack)
-        switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        content.append(switcher)
-        self.utility_stack.set_vexpand(True)
-        content.append(self.utility_stack)
-        return content
+        # Use the tools page's scroller directly; wrapping it in a non-expanding
+        # box caused the nested scroller to collapse when shown in the ViewStack.
+        return self._tools_page()
 
     def _logs_page(self):
         view = Gtk.TextView(buffer=self.log_buffer)
@@ -1232,6 +1267,7 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _connected(self, chipset, mode, partitions):
         self.device_connected = True
+        self._update_navigation_visibility()
         self.spinner.stop()
         self.spinner.set_visible(False)
         self.connect_button.set_sensitive(True)
@@ -1253,6 +1289,9 @@ class MtkWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _populate_partitions(self):
+        if self._partition_menu_popover.get_parent() is not None:
+            self._partition_menu_popover.popdown()
+            self._partition_menu_popover.unparent()
         child = self.partition_list.get_first_child()
         while child is not None:
             following = child.get_next_sibling()
@@ -1260,6 +1299,7 @@ class MtkWindow(Adw.ApplicationWindow):
             child = following
         self.partition_checks.clear()
         self.partition_rows.clear()
+        self.partition_pin_status.clear()
         self.partition_images.clear()
         self.partition_image_status = {}
         for name, size in self.partitions:
@@ -1273,6 +1313,12 @@ class MtkWindow(Adw.ApplicationWindow):
             image_status.set_visible(False)
             row.add_suffix(image_status)
             self.partition_image_status[name] = image_status
+            pin_status = Gtk.Image.new_from_icon_name("view-pin-symbolic")
+            pin_status.set_tooltip_text("Pinned to top")
+            pin_status.update_property([Gtk.AccessibleProperty.LABEL], ["Pinned to top"])
+            pin_status.set_visible(name in self.pinned_partitions)
+            row.add_suffix(pin_status)
+            self.partition_pin_status[name] = pin_status
             check = Gtk.CheckButton()
             check.set_valign(Gtk.Align.CENTER)
             check.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {name}"])
@@ -1288,7 +1334,16 @@ class MtkWindow(Adw.ApplicationWindow):
             drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
             drop.connect("drop", self._partition_file_dropped, name)
             row.add_controller(drop)
-            row.set_tooltip_text("Drop an image file here, or use Choose…")
+            context_click = Gtk.GestureClick()
+            context_click.set_button(Gdk.BUTTON_SECONDARY)
+            context_click.connect("pressed", self._partition_context_pressed, name)
+            row.add_controller(context_click)
+            key_controller = Gtk.EventControllerKey()
+            key_controller.connect("key-pressed", self._partition_row_key_pressed, name)
+            row.add_controller(key_controller)
+            row.set_tooltip_text(
+                "Drop an image here, use Choose…, or right-click to pin"
+            )
             self.partition_checks[name] = (check, size)
             self.partition_rows[name] = row
         self._refresh_partition_view()
@@ -1301,6 +1356,9 @@ class MtkWindow(Adw.ApplicationWindow):
             names = sorted(self.partition_rows, key=str.casefold)
         else:
             names = [name for name, _size in self.partitions if name in self.partition_rows]
+        # Keep pinned partitions at the top without disturbing the chosen sort
+        # order within the pinned and unpinned groups.
+        names.sort(key=lambda name: name not in self.pinned_partitions)
 
         child = self.partition_list.get_first_child()
         while child is not None:
@@ -1343,6 +1401,81 @@ class MtkWindow(Adw.ApplicationWindow):
         for name, (partition_check, _size) in self.partition_checks.items():
             if self.partition_rows[name].get_visible():
                 partition_check.set_active(check.get_active())
+
+    def _partition_menu_model(self, name):
+        menu = Gio.Menu()
+        menu.append(
+            "Unpin from top" if name in self.pinned_partitions else "Pin to top",
+            "row.toggle-pin",
+        )
+        return menu
+
+    def _partition_context_pressed(self, _gesture, n_press, x, y, name):
+        if n_press == 1:
+            self._show_partition_menu(name, x, y)
+
+    def _partition_row_key_pressed(self, _controller, keyval, _keycode, state, name):
+        if keyval == Gdk.KEY_Menu or (
+            keyval == Gdk.KEY_F10 and state & Gdk.ModifierType.SHIFT_MASK
+        ):
+            row = self.partition_rows.get(name)
+            if row is not None:
+                self._show_partition_menu(
+                    name, row.get_width() / 2, row.get_height() / 2
+                )
+            return True
+        return False
+
+    def _show_partition_menu(self, name, x, y):
+        row = self.partition_rows.get(name)
+        if row is None:
+            return
+        popover = self._partition_menu_popover
+        popover.popdown()
+        if popover.get_parent() is not None:
+            popover.unparent()
+        self._partition_menu_target = name
+        popover.set_menu_model(self._partition_menu_model(name))
+        popover.set_parent(row)
+        rectangle = Gdk.Rectangle()
+        rectangle.x = max(0, int(x))
+        rectangle.y = max(0, int(y))
+        rectangle.width = 1
+        rectangle.height = 1
+        popover.set_pointing_to(rectangle)
+        popover.popup()
+
+    def _toggle_partition_pin_action(self, *_args):
+        name = self._partition_menu_target
+        self._partition_menu_target = None
+        if name is None:
+            return
+        self._partition_menu_popover.popdown()
+        self._toggle_partition_pin(name)
+
+    def _toggle_partition_pin(self, name):
+        pinned = name not in self.pinned_partitions
+        if pinned:
+            self.pinned_partitions.add(name)
+        else:
+            self.pinned_partitions.discard(name)
+        saved = True
+        try:
+            set_pinned_partitions(self.pinned_partitions)
+        except OSError:
+            saved = False
+            logging.exception("Could not save pinned partitions")
+            self.toast_overlay.add_toast(
+                Adw.Toast(title="Pinned partitions could not be saved")
+            )
+        pin_status = self.partition_pin_status.get(name)
+        if pin_status is not None:
+            pin_status.set_visible(pinned)
+        self._refresh_partition_view()
+        if saved:
+            self.toast_overlay.add_toast(Adw.Toast(
+                title=f"{name} pinned to top" if pinned else f"{name} unpinned"
+            ))
 
     def _selection_changed(self):
         count = len(self._selected_partitions())
@@ -1407,6 +1540,11 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_rows[name].set_subtitle(
             f"{self._format_size(self.partition_checks[name][1])} · {os.path.basename(path)}"
         )
+        # Assigning an image is a clear signal that this partition is part of the
+        # operation, so select it automatically for writing.
+        image_check = self.partition_checks[name][0]
+        if not image_check.get_active():
+            image_check.set_active(True)
         self.toast_overlay.add_toast(Adw.Toast(title=f"Image assigned to {name}"))
 
     def _start_partition_write(self, selected, images):
@@ -1425,7 +1563,7 @@ class MtkWindow(Adw.ApplicationWindow):
             path = dialog.get_file().get_path()
             if file_kind == "loader":
                 self.loader_path = path
-                self.loader_row.set_text(path)
+                self.loader_row.set_subtitle(path)
                 if self.backend:
                     mtk = self.backend.mtk
                     mtk.config.loader = path
@@ -1433,7 +1571,7 @@ class MtkWindow(Adw.ApplicationWindow):
                     mtk.daloader.daconfig.parse_da_loader(path, mtk.daloader.daconfig.dasetup)
             else:
                 self.preloader_path = path
-                self.preloader_row.set_text(path)
+                self.preloader_row.set_subtitle(path)
                 if self.backend:
                     self.backend.mtk.config.preloader_filename = path
                     with open(path, "rb") as stream:
