@@ -172,6 +172,10 @@ class MtkWindow(Adw.ApplicationWindow):
         slides.set_vhomogeneous(False)
 
         art_pictures = []
+        mode_pictures = []
+        preview_popovers = []
+        hover_close_sources = []
+        pulse_phase = False
         style_manager = Adw.StyleManager.get_default()
         art_palettes = {
             False: {
@@ -188,8 +192,13 @@ class MtkWindow(Adw.ApplicationWindow):
             },
         }
 
-        def render_illustration(picture, art_name):
-            palette = art_palettes[style_manager.get_dark()]
+        def render_illustration(
+            picture, art_name, pulse=False, raster_size=(720, 960)
+        ):
+            dark = style_manager.get_dark()
+            palette = dict(art_palettes[dark])
+            if pulse and pulse_phase:
+                palette["accent"] = "#a8d0fb" if dark else "#6ba8f0"
             path = os.path.join(APP_DIR, "assets", art_name)
             with open(path, "rb") as svg_file:
                 svg = svg_file.read().decode("utf-8")
@@ -203,14 +212,30 @@ class MtkWindow(Adw.ApplicationWindow):
                 svg,
             )
             loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
-            loader.set_size(720, 960)
+            loader.set_size(*raster_size)
             loader.write(svg.encode("utf-8"))
             loader.close()
             picture.set_paintable(Gdk.Texture.new_for_pixbuf(loader.get_pixbuf()))
 
         def update_illustration_theme(*_args):
-            for picture, art_name in art_pictures:
-                render_illustration(picture, art_name)
+            for picture, art_name, raster_size in art_pictures:
+                render_illustration(
+                    picture, art_name,
+                    pulse=any(mode_picture is picture
+                              for mode_picture, _, _ in mode_pictures) and pulse_phase,
+                    raster_size=raster_size,
+                )
+
+        def pulse_mode_actions():
+            nonlocal pulse_phase
+            if slides.get_visible_child_name() != "mode":
+                return GLib.SOURCE_CONTINUE
+            pulse_phase = not pulse_phase
+            for picture, art_name, raster_size in mode_pictures:
+                render_illustration(
+                    picture, art_name, pulse=True, raster_size=raster_size
+                )
+            return GLib.SOURCE_CONTINUE
 
         self._connection_guide_theme_handler = style_manager.connect(
             "notify::dark", update_illustration_theme
@@ -227,7 +252,7 @@ class MtkWindow(Adw.ApplicationWindow):
                 picture.set_size_request(240, 320)
                 picture.set_accessible_role(Gtk.AccessibleRole.IMG)
                 picture.update_property([Gtk.AccessibleProperty.LABEL], [art_label])
-                art_pictures.append((picture, art_name))
+                art_pictures.append((picture, art_name, (720, 960)))
                 render_illustration(picture, art_name)
                 art_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
                 art_card.add_css_class("card")
@@ -276,6 +301,10 @@ class MtkWindow(Adw.ApplicationWindow):
         ), "power")
 
         mode_cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        settings = Gtk.Settings.get_default()
+        animations_enabled = bool(
+            settings and settings.get_property("gtk-enable-animations")
+        )
         for art_name, mode_title, mode_body in (
             ("connect-usb-buttons.svg", "BootROM mode", "Press and hold Volume Up, Volume Down, or the button combination for your model. Keep holding while you plug in USB. Some devices need both volume buttons or all hardware buttons."),
             ("connect-usb-preloader.svg", "Preloader mode", "With the phone off, plug in USB without holding any hardware buttons."),
@@ -289,6 +318,8 @@ class MtkWindow(Adw.ApplicationWindow):
             mode_picture.set_can_shrink(True)
             mode_picture.set_size_request(96, 128)
             mode_picture.set_accessible_role(Gtk.AccessibleRole.IMG)
+            mode_picture.set_cursor_from_name("zoom-in")
+            mode_picture.set_tooltip_text("Hover to enlarge")
             mode_art_label = (
                 "BootROM mode: volume buttons highlighted; USB cable muted"
                 if mode_title == "BootROM mode"
@@ -297,9 +328,69 @@ class MtkWindow(Adw.ApplicationWindow):
             mode_picture.update_property(
                 [Gtk.AccessibleProperty.LABEL], [mode_art_label]
             )
-            art_pictures.append((mode_picture, art_name))
+            art_pictures.append((mode_picture, art_name, (720, 960)))
+            mode_pictures.append((mode_picture, art_name, (720, 960)))
             render_illustration(mode_picture, art_name)
             mode_card.append(mode_picture)
+
+            preview_picture = Gtk.Picture()
+            preview_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            preview_picture.set_can_shrink(True)
+            preview_picture.set_size_request(240, 320)
+            preview_picture.set_accessible_role(Gtk.AccessibleRole.IMG)
+            preview_picture.update_property(
+                [Gtk.AccessibleProperty.LABEL], [mode_art_label]
+            )
+            art_pictures.append((preview_picture, art_name, (240, 320)))
+            mode_pictures.append((preview_picture, art_name, (240, 320)))
+            render_illustration(preview_picture, art_name, raster_size=(240, 320))
+
+            preview_popover = Gtk.Popover()
+            preview_popover.set_has_arrow(False)
+            preview_popover.set_autohide(False)
+            preview_popover.set_position(Gtk.PositionType.RIGHT)
+            preview_popover.set_child(preview_picture)
+            preview_popover.set_parent(mode_picture)
+            preview_popovers.append(preview_popover)
+
+            pending_close = [None]
+
+            def cancel_preview_close(*_args, pending_close=pending_close):
+                if pending_close[0]:
+                    GLib.source_remove(pending_close[0])
+                    pending_close[0] = None
+
+            def show_preview(
+                *_args, cancel_close=cancel_preview_close,
+                preview_popover=preview_popover,
+            ):
+                cancel_close()
+                preview_popover.popup()
+
+            def schedule_preview_close(
+                *_args, pending_close=pending_close,
+                preview_popover=preview_popover,
+                cancel_close=cancel_preview_close,
+            ):
+                cancel_close()
+
+                def close_preview():
+                    pending_close[0] = None
+                    preview_popover.popdown()
+                    return GLib.SOURCE_REMOVE
+
+                pending_close[0] = GLib.timeout_add(180, close_preview)
+
+            for hover_target in (mode_picture, preview_popover):
+                motion = Gtk.EventControllerMotion()
+                motion.connect(
+                    "enter",
+                    show_preview if hover_target is mode_picture else cancel_preview_close,
+                )
+                motion.connect("leave", schedule_preview_close)
+                hover_target.add_controller(motion)
+            hover_close_sources.append(pending_close)
+
             mode_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
             mode_copy.set_margin_top(12)
             mode_copy.set_margin_bottom(12)
@@ -319,6 +410,12 @@ class MtkWindow(Adw.ApplicationWindow):
             "The right method depends on the phone. Try the mode requested by your device or its service instructions.",
             mode_cards,
         ), "mode")
+        if animations_enabled:
+            self._connection_guide_pulse_source = GLib.timeout_add(
+                900, pulse_mode_actions
+            )
+        self._connection_guide_hover_sources = hover_close_sources
+        self._connection_guide_popovers = preview_popovers
 
         testpoint_note = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         testpoint_note.add_css_class("card")
@@ -369,6 +466,9 @@ class MtkWindow(Adw.ApplicationWindow):
         def show_step(index):
             nonlocal current_step
             current_step = max(0, min(index, len(slide_names) - 1))
+            if current_step != 1:
+                for popover in preview_popovers:
+                    popover.popdown()
             slides.set_visible_child_name(slide_names[current_step])
             step_count.set_text(f"STEP {current_step + 1} OF {len(slide_names)}")
             for segment_index, segment in enumerate(progress_bars):
@@ -403,6 +503,19 @@ class MtkWindow(Adw.ApplicationWindow):
         window.present()
 
     def _connection_guide_closed(self, *_args):
+        if getattr(self, "_connection_guide_pulse_source", None):
+            GLib.source_remove(self._connection_guide_pulse_source)
+            self._connection_guide_pulse_source = None
+        for source in getattr(self, "_connection_guide_hover_sources", []):
+            if source[0]:
+                GLib.source_remove(source[0])
+                source[0] = None
+        self._connection_guide_hover_sources = []
+        for popover in getattr(self, "_connection_guide_popovers", []):
+            if popover.get_parent():
+                popover.popdown()
+                popover.unparent()
+        self._connection_guide_popovers = []
         if getattr(self, "_connection_guide_theme_handler", None):
             Adw.StyleManager.get_default().disconnect(
                 self._connection_guide_theme_handler

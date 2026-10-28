@@ -6,6 +6,8 @@
     <circle cx="225" cy="59" r="3" fill="#5e5c64" stroke="none"/>
     <path d="M83 145h-9v45h9" fill="#3584e4" stroke="#3584e4"/>
     <path d="M83 205h-9v45h9" fill="#3584e4" stroke="#3584e4"/>
+    <circle cx="79" cy="167" r="17" fill="none" stroke="#3584e4" stroke-width="4"/>
+    <circle cx="79" cy="227" r="17" fill="none" stroke="#3584e4" stroke-width="4"/>
     <path d="M277 162h9v48h-9" fill="#deddda"/>
     <path d="M180 404v28" fill="none" stroke="#9a9996"/>
     <path d="M164 432h32v14h-32z" fill="#deddda" stroke="#9a9996"/>

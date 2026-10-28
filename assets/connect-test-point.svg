@@ -1,20 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 480" role="img" aria-label="A probe touching a marked test point on a circuit board">
-  <g stroke="#5e5c64" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="34" y="96" width="292" height="286" rx="28" fill="#e8e6e3"/>
-    <path d="M72 154h54v45h42M288 151h-48v39h-36M73 326h51v-40h43M286 321h-42v-39h-38" fill="none" stroke="#9a9996" stroke-width="6"/>
-    <circle cx="72" cy="154" r="10" fill="#c0bfbc"/>
-    <circle cx="288" cy="151" r="10" fill="#c0bfbc"/>
-    <circle cx="73" cy="326" r="10" fill="#c0bfbc"/>
-    <circle cx="286" cy="321" r="10" fill="#c0bfbc"/>
-    <rect x="143" y="223" width="74" height="56" rx="9" fill="#deddda"/>
-    <path d="M158 239h44M158 251h30M158 263h37" fill="none" stroke="#9a9996" stroke-width="4"/>
-  </g>
-  <path d="M34 140h-17v198h17M326 140h17v198h-17" fill="none" stroke="#9a9996" stroke-width="6"/>
-  <circle cx="113" cy="222" r="27" fill="#99c1f1"/>
-  <circle cx="113" cy="222" r="13" fill="#3584e4" stroke="#5e5c64" stroke-width="5"/>
-  <path d="M268 66 137 207" fill="none" stroke="#5e5c64" stroke-width="8" stroke-linecap="round"/>
-  <path d="m279 55-18 5 11 11 5-16Z" fill="#3584e4" stroke="#5e5c64" stroke-width="4" stroke-linejoin="round"/>
-  <path d="m137 207-17 18" fill="none" stroke="#5e5c64" stroke-width="6" stroke-linecap="round"/>
-  <rect x="70" y="397" width="220" height="43" rx="12" fill="#deddda"/>
-  <text x="180" y="427" text-anchor="middle" font-family="sans-serif" font-size="25" font-weight="600" letter-spacing="1" fill="#3d3846">TP1</text>
+  <rect x="36" y="101" width="288" height="284" rx="28" fill="#e8e6e3" stroke="#5e5c64" stroke-width="6"/>
+  <circle cx="72" cy="137" r="8" fill="#c0bfbc"/>
+  <circle cx="288" cy="349" r="8" fill="#c0bfbc"/>
+  <circle cx="137" cy="247" r="31" fill="#99c1f1"/>
+  <circle cx="137" cy="247" r="13" fill="#3584e4" stroke="#5e5c64" stroke-width="5"/>
+  <path d="M275 130 164 226" fill="none" stroke="#5e5c64" stroke-width="10" stroke-linecap="round"/>
+  <path d="m164 226-18 14 4-21Z" fill="#3584e4" stroke="#5e5c64" stroke-width="4" stroke-linejoin="round"/>
+  <text x="187" y="278" font-family="sans-serif" font-size="22" font-weight="600" letter-spacing="1" fill="#3d3846">TP1</text>
 </svg>
