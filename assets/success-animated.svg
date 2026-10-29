@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Success</title>
+  <desc id="desc">A rounded check mark draws itself into a green circular badge.</desc>
+  <defs>
+    <linearGradient id="badge" x1="48" y1="37" x2="211" y2="224" gradientUnits="userSpaceOnUse" color-interpolation="linearRGB">
+      <stop offset="0" stop-color="#57d68a"/><stop offset=".42" stop-color="#33c875"/><stop offset=".78" stop-color="#26a269"/><stop offset="1" stop-color="#208653"/>
+    </linearGradient>
+    <radialGradient id="light" cx=".30" cy=".20" r=".88" color-interpolation="linearRGB">
+      <stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".52" stop-color="#fff" stop-opacity=".055"/><stop offset="1" stop-color="#123f2d" stop-opacity=".10"/>
+    </radialGradient>
+  </defs>
+  <g id="badge"><circle cx="128" cy="128" r="101" fill="url(#badge)"/><circle cx="128" cy="128" r="101" fill="url(#light)"/></g>
+  <g id="check" fill="none" stroke="#e8ffe9" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m77 130 34 34 69-72" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1">
+      <animate attributeName="stroke-dashoffset" from="1" to="0" dur="0.78s" calcMode="spline" keySplines=".35 0 .2 1" fill="freeze"/>
+    </path>
+  </g>
+</svg>
