@@ -161,19 +161,9 @@ class MtkWindow(Adw.ApplicationWindow):
         page.set_margin_end(24)
 
         intro = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        eyebrow = Gtk.Label(label="DEVICE SETUP", xalign=0)
-        eyebrow.add_css_class("caption")
-        eyebrow.add_css_class("accent")
-        intro.append(eyebrow)
         title = Gtk.Label(label="Let’s get your device connected", xalign=0)
         title.add_css_class("title-1")
         intro.append(title)
-        subtitle = Gtk.Label(
-            label="Follow the illustrated steps. Start with the phone powered off and USB unplugged.",
-            xalign=0, wrap=True,
-        )
-        subtitle.add_css_class("dimmed")
-        intro.append(subtitle)
         page.append(intro)
 
         progress_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -698,6 +688,13 @@ class MtkWindow(Adw.ApplicationWindow):
         back_button.connect("clicked", lambda *_: show_step(current_step - 1))
         next_button.connect("clicked", advance)
         done_button.connect("clicked", lambda *_: window.close())
+        escape = Gtk.ShortcutController()
+        escape.set_scope(Gtk.ShortcutScope.LOCAL)
+        escape.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("Escape"),
+            Gtk.CallbackAction.new(lambda *_args: (window.close(), True)[1]),
+        ))
+        window.add_controller(escape)
         show_step(0)
 
         clamp = Adw.Clamp(maximum_size=860)
@@ -838,16 +835,20 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_icon.add_css_class("dimmed")
         content.append(self.connection_icon)
 
-        title = Gtk.Label(label="Connect a MediaTek device")
-        title.add_css_class("title-1")
-        content.append(title)
+        self.connection_title = Gtk.Label(label="Connect a MediaTek device")
+        self.connection_title.add_css_class("title-1")
+        content.append(self.connection_title)
 
         self.connection_status = Gtk.Label(
-            label="Connect a powered-off device to begin. The connection method depends on your device."
+            label=""
         )
         self.connection_status.set_wrap(True)
         self.connection_status.set_justify(Gtk.Justification.CENTER)
         self.connection_status.set_max_width_chars(56)
+        self.connection_status.set_size_request(-1, 52)
+        self.connection_status.set_lines(2)
+        self.connection_status.set_ellipsize(Pango.EllipsizeMode.END)
+        self.connection_status.set_valign(Gtk.Align.CENTER)
         self.connection_status.add_css_class("dimmed")
         content.append(self.connection_status)
 
@@ -863,36 +864,49 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_help_button.connect("clicked", self.open_connection_guide)
         content.append(self.connection_help_button)
 
-        self.spinner = Gtk.Spinner()
-        self.spinner.set_size_request(48, 48)
-        self.spinner.add_css_class("connecting-spinner")
-        self.spinner.set_visible(False)
-        content.append(self.spinner)
-
-        # Separate the primary action from the introductory content and help.
+        # Keep the loading indicator in its own reserved row between help and
+        # the primary action; toggling opacity never changes the page geometry.
         content.set_spacing(20)
         content.set_margin_top(40)
         content.set_margin_bottom(40)
-        spacer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        spacer.set_size_request(-1, 12)
-        content.append(spacer)
+        self.connection_help_button.set_margin_bottom(4)
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(32, 32)
+        self.spinner.set_halign(Gtk.Align.CENTER)
+        self.spinner.set_opacity(0)
+        content.append(self.spinner)
 
+        self.connection_action_stack = Gtk.Stack()
+        self.connection_action_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.connection_action_stack.set_size_request(240, 72)
         self.connect_button = Gtk.Button(label="Start device detection")
         self.connect_button.add_css_class("suggested-action")
         self.connect_button.set_halign(Gtk.Align.CENTER)
         self.connect_button.add_css_class("pill")
         self.connect_button.set_size_request(240, 52)
         self.connect_button.connect("clicked", lambda *_: self.connect_backend())
-        content.append(self.connect_button)
+        self.connection_action_stack.add_named(self.connect_button, "connect")
+        self.connected_mark = Gtk.Button.new_from_icon_name("emblem-ok-symbolic")
+        self.connected_mark.set_size_request(72, 72)
+        self.connected_mark.set_halign(Gtk.Align.CENTER)
+        self.connected_mark.set_valign(Gtk.Align.CENTER)
+        self.connected_mark.add_css_class("circular")
+        self.connected_mark.add_css_class("success")
+        self.connected_mark.set_tooltip_text("Device connected")
+        self.connected_mark.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Device connected successfully"]
+        )
+        self.connected_mark.set_sensitive(False)
+        self.connection_action_stack.add_named(self.connected_mark, "connected")
+        content.append(self.connection_action_stack)
 
         connection_options_group = Adw.PreferencesGroup()
+        connection_options_group.set_margin_top(12)
         connection_options_group.add(self.connection_options_row)
         content.append(connection_options_group)
 
         self.device_details = Gtk.Label()
-        self.device_details.add_css_class("dimmed")
         self.device_details.set_visible(False)
-        content.append(self.device_details)
         clamp = Adw.Clamp(maximum_size=680)
         clamp.set_child(content)
         return self._scrolled(clamp)
@@ -902,6 +916,7 @@ class MtkWindow(Adw.ApplicationWindow):
             title="Connection settings",
             subtitle="IoT mode, serial port, loader and preloader",
         )
+        expander.set_show_enable_switch(False)
         self.iot_switch = Adw.SwitchRow(title="Use IoT mode")
         self.iot_switch.set_subtitle("Enable for supported MediaTek IoT devices")
         expander.add_row(self.iot_switch)
@@ -955,7 +970,9 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _update_navigation_visibility(self):
         connected = self.device_connected
-        self.header.set_visible(connected)
+        # Keep the Adw.HeaderBar present while disconnected so the window's
+        # client-side decorations and draggable title area remain available.
+        self.header.set_visible(True)
         self.switcher.set_visible(connected)
         self.navigation_button.set_visible(connected)
         if not connected:
@@ -1210,7 +1227,7 @@ class MtkWindow(Adw.ApplicationWindow):
         if self.connection_thread and self.connection_thread.is_alive():
             return
         self.connect_button.set_sensitive(False)
-        self.spinner.set_visible(True)
+        self.spinner.set_opacity(1)
         self.spinner.start()
         self.connection_icon.set_from_icon_name("phone-symbolic")
         self.device_details.set_visible(False)
@@ -1269,13 +1286,11 @@ class MtkWindow(Adw.ApplicationWindow):
         self.device_connected = True
         self._update_navigation_visibility()
         self.spinner.stop()
-        self.spinner.set_visible(False)
+        self.spinner.set_opacity(0)
         self.connect_button.set_sensitive(True)
-        self.connect_button.set_label("Reconnect")
-        self.connection_icon.set_from_icon_name("phone-symbolic")
-        self.connection_status.set_text("Device initialized successfully")
-        self.device_details.set_text(f"{chipset}\n{mode}")
-        self.device_details.set_visible(True)
+        self.connection_title.set_text("Device connected")
+        self.connection_status.set_text("")
+        self.connection_action_stack.set_visible_child_name("connected")
         self.partitions = partitions
         self._populate_partitions()
         self._selection_changed()
@@ -1898,8 +1913,10 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _connection_failed(self, error):
         self.spinner.stop()
-        self.spinner.set_visible(False)
+        self.spinner.set_opacity(0)
         self.connect_button.set_sensitive(True)
+        self.connection_action_stack.set_visible_child_name("connect")
+        self.connection_title.set_text("Connect a MediaTek device")
         self.connect_button.set_label("Try again")
         self.connection_status.set_text(
             "Could not initialize the device. Check USB/udev permissions, power it off, "
