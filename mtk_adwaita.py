@@ -386,7 +386,7 @@ class MtkWindow(Adw.ApplicationWindow):
             "connect-power-off.svg",
             "Phone illustration for the first step: power off the phone.",
             "1. Power off the phone",
-            "Begin with the device fully shut down."
+            "Begin with the device fully shut down.",
             power_note,
         ), "power")
 
