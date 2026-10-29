@@ -9,6 +9,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import cairo
+
 from app_settings import (get_advanced_logging, get_backend_dir,
                           get_pinned_partitions, set_advanced_logging,
                           set_backend_dir, set_pinned_partitions)
@@ -68,6 +70,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.set_default_size(900, 650)
         self.backend = None
         self.connection_thread = None
+        self.connection_status_source = None
+        self.connection_search_slow_source = None
+        self.connection_status_phrases = ()
+        self.connection_status_phrase_index = 0
         self.operation_thread = None
         self.device_connected = False
         self.operation_busy = False
@@ -75,6 +81,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_total = None
         self.operation_progress_position = 0
         self.operation_has_progress = False
+        self.connected_mark_started_at = None
         self.loader_path = None
         self.preloader_path = None
         self.partitions = []
@@ -879,31 +886,41 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_action_stack = Gtk.Stack()
         self.connection_action_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.connection_action_stack.set_size_request(240, 72)
+        self._connection_button_css = Gtk.CssProvider()
+        self._connection_button_css.load_from_data(
+            "button.connect-primary { padding-top: 0; padding-bottom: 0; min-height: 0; font-weight: 600; }"
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self._connection_button_css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
         self.connect_button = Gtk.Button(label="Start device detection")
         self.connect_button.add_css_class("suggested-action")
+        self.connect_button.add_css_class("connect-primary")
         self.connect_button.set_halign(Gtk.Align.CENTER)
         self.connect_button.add_css_class("pill")
-        self.connect_button.set_size_request(240, 52)
+        self.connect_button.set_size_request(240, 32)
         self.connect_button.connect("clicked", lambda *_: self.connect_backend())
         self.connection_action_stack.add_named(self.connect_button, "connect")
-        self.connected_mark = Gtk.Button.new_from_icon_name("emblem-ok-symbolic")
+        self.connected_mark = Gtk.DrawingArea()
+        # Match the original success control's footprint until the connection
+        # succeeds; the large illustration size is applied only in _connected.
         self.connected_mark.set_size_request(72, 72)
         self.connected_mark.set_halign(Gtk.Align.CENTER)
         self.connected_mark.set_valign(Gtk.Align.CENTER)
-        self.connected_mark.add_css_class("circular")
-        self.connected_mark.add_css_class("success")
+        self.connected_mark.set_accessible_role(Gtk.AccessibleRole.IMG)
         self.connected_mark.set_tooltip_text("Device connected")
         self.connected_mark.update_property(
             [Gtk.AccessibleProperty.LABEL], ["Device connected successfully"]
         )
-        self.connected_mark.set_sensitive(False)
+        self.connected_mark.set_draw_func(self._draw_connected_mark)
         self.connection_action_stack.add_named(self.connected_mark, "connected")
         content.append(self.connection_action_stack)
 
-        connection_options_group = Adw.PreferencesGroup()
-        connection_options_group.set_margin_top(12)
-        connection_options_group.add(self.connection_options_row)
-        content.append(connection_options_group)
+        self.connection_options_group = Adw.PreferencesGroup()
+        self.connection_options_group.set_margin_top(12)
+        self.connection_options_group.add(self.connection_options_row)
+        content.append(self.connection_options_group)
 
         self.device_details = Gtk.Label()
         self.device_details.set_visible(False)
@@ -1182,6 +1199,48 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_status.set_text(message)
         return GLib.SOURCE_REMOVE
 
+    def _set_connection_phase(self, phrases, slow_search_phrases=None):
+        """Show a short, phase-appropriate connection message and rotate it."""
+        if self.connection_search_slow_source:
+            GLib.source_remove(self.connection_search_slow_source)
+            self.connection_search_slow_source = None
+        self.connection_status_phrases = phrases
+        self.connection_status_phrase_index = 0
+        self.connection_status.set_text(phrases[0])
+        if slow_search_phrases:
+            self.connection_search_slow_source = GLib.timeout_add(
+                15_000, self._show_slow_search, slow_search_phrases
+            )
+        return GLib.SOURCE_REMOVE
+
+    def _show_slow_search(self, phrases):
+        self.connection_search_slow_source = None
+        if self.device_connected:
+            return GLib.SOURCE_REMOVE
+        self._set_connection_phase(phrases)
+        return GLib.SOURCE_REMOVE
+
+    def _rotate_connection_status(self):
+        if not self.connection_status_phrases or self.device_connected:
+            self.connection_status_source = None
+            return GLib.SOURCE_REMOVE
+        self.connection_status_phrase_index = (
+            self.connection_status_phrase_index + 1
+        ) % len(self.connection_status_phrases)
+        self.connection_status.set_text(
+            self.connection_status_phrases[self.connection_status_phrase_index]
+        )
+        return GLib.SOURCE_CONTINUE
+
+    def _stop_connection_status_rotation(self):
+        if self.connection_status_source:
+            GLib.source_remove(self.connection_status_source)
+            self.connection_status_source = None
+        if self.connection_search_slow_source:
+            GLib.source_remove(self.connection_search_slow_source)
+            self.connection_search_slow_source = None
+        self.connection_status_phrases = ()
+
     def _prepare_backend(self):
         # Import only after GTK has started; backend dependency/setup errors then
         # become visible in both the UI and the launching terminal.
@@ -1226,12 +1285,24 @@ class MtkWindow(Adw.ApplicationWindow):
     def connect_backend(self):
         if self.connection_thread and self.connection_thread.is_alive():
             return
+        self._stop_connection_status_rotation()
         self.connect_button.set_sensitive(False)
         self.spinner.set_opacity(1)
         self.spinner.start()
         self.connection_icon.set_from_icon_name("phone-symbolic")
         self.device_details.set_visible(False)
-        self.set_status("Initializing MTK backend…")
+        self.connection_title.set_text("Connecting to your device")
+        self._set_connection_phase((
+            "Waking up the USB gremlins…",
+            "Booting the tiny toolbox…",
+            "Checking the cables of the digital kind…",
+            "Tuning the device-detection antenna…",
+            "Preparing for some very serious USB business…",
+            "Getting our bits in a row…",
+        ))
+        self.connection_status_source = GLib.timeout_add(
+            2600, self._rotate_connection_status
+        )
         self.append_log("Starting MediaTek device detection.")
         self.connection_thread = threading.Thread(target=self._connect_worker,
                                                  name="mtk-connect", daemon=True)
@@ -1245,9 +1316,33 @@ class MtkWindow(Adw.ApplicationWindow):
             mtk = self.backend.mtk
             mtk.config.iot = self.iot_switch.get_active()
 
-            GLib.idle_add(self.set_status,
-                          "Waiting for the powered-off device. Hold a volume key for bootrom, "
-                          "or connect without buttons for preloader mode.")
+            GLib.idle_add(self._set_connection_phase, (
+                "Looking for your device…",
+                "Listening for a MediaTek device on USB…",
+                "Searching the USB neighborhood…",
+                "USB sonar is on. Anything out there?",
+                "Looking for a phone hiding in plain sight…",
+                "The device-detection detective is on the case…",
+                "Waiting for your phone to make its grand entrance…",
+                "Scanning for tiny electronic footprints…",
+                "Still looking. Make sure the phone is powered off…",
+                "Checking every nook and cranny of the USB port…",
+                "Calling all MediaTek devices…",
+                "Our bits are listening. Is your phone ready?",
+                "A powered-off phone is playing hide-and-seek…",
+            ), (
+                "No phone found yet; the plot thickens…",
+                "Still no device detected. USB is keeping its secrets…",
+                "Your phone is being very mysterious right now…",
+                "Trying to intrepret the silence",
+                "Somewhere, a bootloader is pretending not to hear us",
+                "Taking the scenic route through USB…",
+                "Still here, still searching, still oddly optimistic…",
+                "Could the cable be charge-only? It happens to the best of us…",
+                "The USB port owes us an explanation…",
+                "Search status: hopeful, if a little puzzled…",
+                "The phone has not RSVP’d to our USB party…",
+            ))
             print("[mtkclient] Waiting for MediaTek USB device…", flush=True)
 
             # Follow the established Qt GUI connection sequence so the
@@ -1257,13 +1352,46 @@ class MtkWindow(Adw.ApplicationWindow):
             else:
                 print("[mtkclient] USB device enumerated; performing handshake.", flush=True)
 
+            GLib.idle_add(self._set_connection_phase, (
+                "A device appeared. Initiating handshake…",
+                "Knocking politely on the bootloader’s door…",
+                "Exchanging secret USB handshakes…",
+                "Making introductions to the bootloader…",
+                "Negotiating politely with some very serious bits…",
+                "Getting acquainted with your phone’s bootloader…",
+                "The bootloader is considering our proposal…",
+                "Establishing a tiny digital trust exercise…",
+                "Hello, bootloader. We come in peace…",
+            ))
             connected = self.backend.connect(mtk)
             if connected is None:
                 raise RuntimeError("Backend could not initialize the device. See the log for details.")
+            GLib.idle_add(self._set_connection_phase, (
+                "Bootloader replied. Setting up the Download Agent…",
+                "Loading the right tools onto the device…",
+                "Almost there — preparing the device session…",
+                "Unpacking the digital toolbox…",
+                "Giving the Download Agent its marching orders…",
+                "Teaching the device a few new tricks…",
+                "Getting the Download Agent settled in…",
+                "A little setup magic, strictly byte-sized…",
+                "Making sure all the right bits are invited…",
+                "The Download Agent is getting its badge…",
+                "Setting the stage for the storage tour…",
+            ))
             connected = self.backend.configure_da(connected)
             if connected is None:
                 raise RuntimeError("Download Agent setup failed. See the log for details.")
 
+            GLib.idle_add(self._set_connection_phase, (
+                "Reading the device’s partition map…",
+                "One last check: finding the storage layout…",
+                "Taking a peek at the phone’s filing cabinet…",
+                "Reading the storage map, one bit at a time…",
+                "Asking the GPT where everything lives…",
+                "Locating the device’s digital drawers…",
+                "The storage tour is almost over…",
+            ))
             _gpt_data, gpt = connected.daloader.get_gpt()
             if gpt is None:
                 raise RuntimeError("Device connected, but its GPT partition table could not be read.")
@@ -1283,6 +1411,7 @@ class MtkWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._connection_failed, str(error))
 
     def _connected(self, chipset, mode, partitions):
+        self._stop_connection_status_rotation()
         self.device_connected = True
         self._update_navigation_visibility()
         self.spinner.stop()
@@ -1290,7 +1419,25 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connect_button.set_sensitive(True)
         self.connection_title.set_text("Device connected")
         self.connection_status.set_text("")
+        # Once connected, turn the setup page into a quiet success state with
+        # the illustration as its focal point.
+        self.connection_icon.set_visible(False)
+        self.connection_status.set_visible(False)
+        self.connection_help_button.set_visible(False)
+        self.spinner.set_visible(False)
+        self.connection_options_group.set_visible(False)
+        self.connection_title.remove_css_class("title-1")
+        self.connection_title.add_css_class("title-2")
+        # Avoid crossfading the connect button against the badge: the two
+        # controls overlap during the stack transition and briefly read as a
+        # single transforming shape.
+        self.connection_action_stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.connected_mark.set_size_request(256, 256)
+        self.connection_action_stack.set_size_request(280, 280)
         self.connection_action_stack.set_visible_child_name("connected")
+        self.connected_mark_started_at = time.monotonic()
+        self.connected_mark.queue_draw()
+        GLib.timeout_add(16, self._animate_connected_mark)
         self.partitions = partitions
         self._populate_partitions()
         self._selection_changed()
@@ -1302,6 +1449,59 @@ class MtkWindow(Adw.ApplicationWindow):
             button.set_sensitive(True)
         self.select_all.set_sensitive(bool(partitions))
         return GLib.SOURCE_REMOVE
+
+    def _animate_connected_mark(self):
+        if self.connected_mark_started_at is None:
+            return GLib.SOURCE_REMOVE
+        progress = min(1.0, (time.monotonic() - self.connected_mark_started_at) / 0.78)
+        self.connected_mark.queue_draw()
+        if progress >= 1.0:
+            self.connected_mark_started_at = None
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+    def _draw_connected_mark(self, _area, context, width, height):
+        context.save()
+        context.scale(width / 256.0, height / 256.0)
+
+        # The same restrained green gradient and rounded pale check as
+        # assets/success-animated.svg, rendered natively so the check animates
+        # consistently in GTK rather than relying on SVG SMIL support.
+        gradient = cairo.LinearGradient(48, 37, 211, 224)
+        for offset, color in (
+            (0.0, (0x57, 0xd6, 0x8a)), (0.42, (0x33, 0xc8, 0x75)),
+            (0.78, (0x26, 0xa2, 0x69)), (1.0, (0x20, 0x86, 0x53)),
+        ):
+            gradient.add_color_stop_rgb(offset, *(channel / 255 for channel in color))
+        context.arc(128, 128, 101, 0, 2 * 3.141592653589793)
+        context.set_source(gradient)
+        context.fill()
+
+        # A quiet highlight/shade overlay adds slight depth without extra decor.
+        shade = cairo.RadialGradient(77, 70, 8, 128, 128, 130)
+        shade.add_color_stop_rgba(0, 1, 1, 1, 0.16)
+        shade.add_color_stop_rgba(0.57, 1, 1, 1, 0.035)
+        shade.add_color_stop_rgba(1, 0.07, 0.25, 0.18, 0.09)
+        context.arc(128, 128, 101, 0, 2 * 3.141592653589793)
+        context.set_source(shade)
+        context.fill()
+
+        elapsed = (time.monotonic() - self.connected_mark_started_at
+                   if self.connected_mark_started_at is not None else 0.78)
+        progress = max(0.0, min(1.0, elapsed / 0.78))
+        # Ease-out matches the SVG animation's clean, quick checked-on motion.
+        eased = 1 - (1 - progress) ** 3
+        context.move_to(77, 130)
+        context.line_to(111, 164)
+        context.line_to(180, 92)
+        context.set_line_width(16)
+        context.set_line_cap(cairo.LINE_CAP_ROUND)
+        context.set_line_join(cairo.LINE_JOIN_ROUND)
+        context.set_source_rgb(0xe8 / 255, 1.0, 0xe9 / 255)
+        if eased > 0:
+            context.set_dash((148 * eased, 148))
+            context.stroke()
+        context.restore()
 
     def _populate_partitions(self):
         if self._partition_menu_popover.get_parent() is not None:
@@ -1912,6 +2112,7 @@ class MtkWindow(Adw.ApplicationWindow):
             handler.handle_da_cmds(handler.mtk, "e", args)
 
     def _connection_failed(self, error):
+        self._stop_connection_status_rotation()
         self.spinner.stop()
         self.spinner.set_opacity(0)
         self.connect_button.set_sensitive(True)
