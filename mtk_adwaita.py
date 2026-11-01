@@ -75,7 +75,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_status_phrases = ()
         self.connection_status_phrase_index = 0
         self.operation_thread = None
+        self.reboot_thread = None
         self.device_connected = False
+        self.brom_mode = False
+        self.preloader_mode = False
         self.operation_busy = False
         self.operation_started_at = None
         self.operation_total = None
@@ -113,7 +116,21 @@ class MtkWindow(Adw.ApplicationWindow):
         self.switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
         self.header.set_title_widget(self.switcher)
         self.navigation_button = self._navigation_menu()
+        self.reboot_button = Gtk.Button()
+        # Ship this icon directly so the desktop icon theme cannot substitute
+        # a refresh glyph for the reboot symbol.
+        self.reboot_icon = Gtk.Image.new_from_file(
+            os.path.join(APP_DIR, "assets", "reboot-device.png")
+        )
+        self.reboot_icon.set_pixel_size(16)
+        self.reboot_button.set_child(self.reboot_icon)
+        self.reboot_button.set_tooltip_text("Reboot Device")
+        self.reboot_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Reboot Device from BROM or preloader"]
+        )
+        self.reboot_button.connect("clicked", self._reboot_device)
         self.header.pack_end(self.navigation_button)
+        self.header.pack_end(self.reboot_button)
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(self.header)
         toolbar.set_content(self.stack)
@@ -1061,6 +1078,8 @@ class MtkWindow(Adw.ApplicationWindow):
             logging.warning("Error closing device connection: %s", error)
         self.backend = None
         self.device_connected = False
+        self.brom_mode = False
+        self.preloader_mode = False
         self.partitions = []
         if self.connected_controls is not None:
             self.connection_action_stack.remove(self.connected_controls)
@@ -1083,6 +1102,104 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connect_button.set_label("Start device detection")
         self._update_navigation_visibility()
 
+    def _reboot_device(self, *_args):
+        """Reboot through the active DA, or directly through BROM/preloader."""
+        if (self.operation_busy
+                or (self.connection_thread and self.connection_thread.is_alive())
+                or (self.reboot_thread and self.reboot_thread.is_alive())):
+            self.toast_overlay.add_toast(Adw.Toast(
+                title="Another device operation is running"
+            ))
+            return
+
+        self.reboot_button.set_sensitive(False)
+        da_mode = self.device_connected
+        if da_mode:
+            self.append_log("Requesting a normal reboot through the active Download Agent session.")
+        else:
+            self.append_log("Starting a direct BROM/preloader reboot (Download Agent will not be started).")
+
+        def reboot_worker():
+            try:
+                if da_mode:
+                    # Use the exact Mtk instance configured by the active DA
+                    # session. Do not reconnect or reinitialize the device.
+                    mtk = self.backend.mtk
+                    daloader = getattr(mtk, "daloader", None)
+                    if daloader is None or getattr(daloader, "da", None) is None:
+                        raise RuntimeError("The active DA session has no shutdown interface")
+                    result = daloader.shutdown(bootmode=0)
+                    if result is False:
+                        raise RuntimeError("MTKClient DA shutdown command failed")
+                    GLib.idle_add(self._reboot_finished, None, False, "DA")
+                    return
+
+                os.chdir(MTKCLIENT_DIR)
+                if self.backend is None:
+                    self.backend = self._prepare_backend()
+                mtk = self.backend.mtk
+                mtk.config.iot = self.iot_switch.get_active()
+                # init() performs the MTKClient handshake and identifies the
+                # chipset. Do not call DaHandler.configure_da() on this path.
+                if not mtk.preloader.init():
+                    raise RuntimeError("Could not establish a BROM/preloader session")
+                config = mtk.config
+                preloader = mtk.preloader
+                watchdog = config.chipconfig.watchdog
+                if not watchdog:
+                    raise RuntimeError("This chipset has no supported watchdog reset register")
+                watchdog_address, _ = config.get_watchdog_addr()
+                if not watchdog_address:
+                    raise RuntimeError("This chipset has no supported watchdog reset register")
+                if not preloader.setreg_disablewatchdogtimer(config.hwcode, config.hwver):
+                    raise RuntimeError("MTKClient could not disable the watchdog")
+                # Do not call reset_to_brom(): it sets USBDL flags. This plain
+                # watchdog reset lets the chip follow its normal boot selection.
+                if not preloader.write32(watchdog_address + 0x14, 0x00001209):
+                    raise RuntimeError("Watchdog reset register write was rejected")
+                GLib.idle_add(self._reboot_finished, None, False, "BROM/preloader")
+            except Exception as error:
+                # Some devices drop USB as the watchdog reset takes effect,
+                # before the write response can be read.
+                disconnected = self._is_usb_disconnect_error(error)
+                GLib.idle_add(
+                    self._reboot_finished, str(error), disconnected,
+                    "DA" if da_mode else "BROM/preloader",
+                )
+
+        self.reboot_thread = threading.Thread(
+            target=reboot_worker, name="mtk-direct-reboot", daemon=True
+        )
+        self.reboot_thread.start()
+
+    @staticmethod
+    def _is_usb_disconnect_error(error):
+        text = str(error).lower()
+        return any(token in text for token in (
+            "usb", "disconnect", "no device", "device has been disconnected",
+            "read error", "write error", "timeout",
+        ))
+
+    def _reboot_finished(self, error, disconnected=False, reboot_mode="device"):
+        self.reboot_button.set_sensitive(True)
+        if error:
+            self.append_log(f"{reboot_mode} reboot ended with: {error}")
+            if disconnected:
+                self.toast_overlay.add_toast(Adw.Toast(
+                    title="USB disconnected during reset; device may be rebooting"
+                ))
+            else:
+                self.toast_overlay.add_toast(Adw.Toast(
+                    title=f"{reboot_mode} reboot failed: {error}"
+                ))
+        else:
+            self.append_log(f"{reboot_mode} reboot command sent; waiting for normal device boot.")
+            self.toast_overlay.add_toast(Adw.Toast(title="Reboot command sent"))
+        if reboot_mode == "DA" and (not error or disconnected) and self.device_connected:
+            # shutdown() closes/releases the DA port; reflect that in Fuse too.
+            self._disconnect_device()
+        return GLib.SOURCE_REMOVE
+
     def _reconnect_device(self, *_args):
         self._disconnect_device()
         self.connect_backend()
@@ -1094,6 +1211,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.header.set_visible(True)
         self.switcher.set_visible(connected)
         self.navigation_button.set_visible(connected)
+        self.reboot_button.set_visible(connected)
         if not connected:
             self.stack.set_visible_child_name("device")
 
@@ -1515,6 +1633,8 @@ class MtkWindow(Adw.ApplicationWindow):
     def _connected(self, chipset, mode, partitions):
         self._stop_connection_status_rotation()
         self.device_connected = True
+        self.brom_mode = mode == "Bootrom mode"
+        self.preloader_mode = mode == "Preloader mode"
         self._update_navigation_visibility()
         self.spinner.stop()
         self.spinner.set_opacity(0)
