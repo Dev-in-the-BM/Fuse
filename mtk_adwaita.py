@@ -82,6 +82,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_progress_position = 0
         self.operation_has_progress = False
         self.connected_mark_started_at = None
+        self.connection_success_timeout = None
         self.loader_path = None
         self.preloader_path = None
         self.partitions = []
@@ -837,10 +838,18 @@ class MtkWindow(Adw.ApplicationWindow):
         content.set_margin_start(24)
         content.set_margin_end(24)
 
-        self.connection_icon = Gtk.Image.new_from_icon_name("phone-symbolic")
-        self.connection_icon.set_pixel_size(48)
-        self.connection_icon.add_css_class("dimmed")
-        content.append(self.connection_icon)
+        self.connection_illustration = Gtk.Picture.new_for_filename(
+            os.path.join(APP_DIR, "assets", "device-ready.svg")
+        )
+        self.connection_illustration.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.connection_illustration.set_can_shrink(True)
+        self.connection_illustration.set_size_request(240, 160)
+        self.connection_illustration.set_accessible_role(Gtk.AccessibleRole.IMG)
+        self.connection_illustration.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["A powered-off phone and USB cable, ready to connect"],
+        )
+        content.append(self.connection_illustration)
 
         self.connection_title = Gtk.Label(label="Connect a MediaTek device")
         self.connection_title.add_css_class("title-1")
@@ -873,9 +882,9 @@ class MtkWindow(Adw.ApplicationWindow):
 
         # Keep the loading indicator in its own reserved row between help and
         # the primary action; toggling opacity never changes the page geometry.
-        content.set_spacing(20)
-        content.set_margin_top(40)
-        content.set_margin_bottom(40)
+        content.set_spacing(16)
+        content.set_margin_top(24)
+        content.set_margin_bottom(24)
         self.connection_help_button.set_margin_bottom(4)
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(32, 32)
@@ -888,7 +897,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_action_stack.set_size_request(240, 72)
         self._connection_button_css = Gtk.CssProvider()
         self._connection_button_css.load_from_data(
-            "button.connect-primary { padding-top: 0; padding-bottom: 0; min-height: 0; font-weight: 600; }"
+            "button.connect-primary { padding: 5px 12px; min-height: 0; font-weight: 600; }"
         )
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self._connection_button_css,
@@ -898,8 +907,9 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connect_button.add_css_class("suggested-action")
         self.connect_button.add_css_class("connect-primary")
         self.connect_button.set_halign(Gtk.Align.CENTER)
+        self.connect_button.set_valign(Gtk.Align.CENTER)
         self.connect_button.add_css_class("pill")
-        self.connect_button.set_size_request(240, 32)
+        self.connect_button.set_size_request(240, 46)
         self.connect_button.connect("clicked", lambda *_: self.connect_backend())
         self.connection_action_stack.add_named(self.connect_button, "connect")
         self.connected_mark = Gtk.DrawingArea()
@@ -915,6 +925,7 @@ class MtkWindow(Adw.ApplicationWindow):
         )
         self.connected_mark.set_draw_func(self._draw_connected_mark)
         self.connection_action_stack.add_named(self.connected_mark, "connected")
+        self.connected_controls = None
         content.append(self.connection_action_stack)
 
         self.connection_options_group = Adw.PreferencesGroup()
@@ -983,7 +994,98 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def show_page(self, name):
         if name == "device" or self.device_connected:
+            if name == "device" and self.device_connected:
+                self._show_connected_controls()
             self.stack.set_visible_child_name(name)
+
+    def _show_connected_controls(self):
+        if self.connected_controls is None:
+            self.connected_controls = Gtk.Box(
+                orientation=Gtk.Orientation.VERTICAL, spacing=12
+            )
+            self.connected_controls.set_halign(Gtk.Align.CENTER)
+            self.connected_controls.set_valign(Gtk.Align.CENTER)
+            self.connected_controls.set_size_request(340, 280)
+            connected_illustration = Gtk.Picture.new_for_filename(
+                os.path.join(APP_DIR, "assets", "device-connected.svg")
+            )
+            connected_illustration.set_content_fit(Gtk.ContentFit.CONTAIN)
+            connected_illustration.set_can_shrink(True)
+            connected_illustration.set_size_request(300, 200)
+            connected_illustration.set_accessible_role(Gtk.AccessibleRole.IMG)
+            connected_illustration.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                ["Phone connected to a computer by USB"],
+            )
+            self.connected_controls.append(connected_illustration)
+            connected_label = Gtk.Label(label="Device is currently connected")
+            connected_label.add_css_class("title-1")
+            self.connected_controls.append(connected_label)
+            connected_subtitle = Gtk.Label(label="Ready to manage device storage.")
+            connected_subtitle.add_css_class("dimmed")
+            self.connected_controls.append(connected_subtitle)
+            connected_actions = Gtk.Box(
+                orientation=Gtk.Orientation.HORIZONTAL, spacing=8
+            )
+            connected_actions.set_halign(Gtk.Align.CENTER)
+            reconnect_button = Gtk.Button(label="Reconnect")
+            reconnect_button.add_css_class("suggested-action")
+            reconnect_button.add_css_class("pill")
+            reconnect_button.connect("clicked", self._reconnect_device)
+            connected_actions.append(reconnect_button)
+            disconnect_button = Gtk.Button(label="Disconnect")
+            disconnect_button.connect("clicked", self._disconnect_device)
+            connected_actions.append(disconnect_button)
+            self.connected_controls.append(connected_actions)
+            self.connection_action_stack.add_named(
+                self.connected_controls, "connected-controls"
+            )
+        self.connected_mark_started_at = None
+        self.connection_illustration.set_visible(False)
+        self.connection_status.set_visible(False)
+        self.connection_help_button.set_visible(False)
+        self.spinner.set_visible(False)
+        self.connection_options_group.set_visible(False)
+        self.connection_title.set_visible(False)
+        self.connection_action_stack.set_size_request(340, 280)
+        self.connection_action_stack.set_visible_child_name("connected-controls")
+
+    def _disconnect_device(self, *_args):
+        backend = self.backend
+        try:
+            port = getattr(getattr(backend, "mtk", None), "port", None)
+            close = getattr(port, "close", None)
+            if close:
+                close()
+        except Exception as error:
+            logging.warning("Error closing device connection: %s", error)
+        self.backend = None
+        self.device_connected = False
+        self.partitions = []
+        if self.connected_controls is not None:
+            self.connection_action_stack.remove(self.connected_controls)
+            self.connected_controls = None
+        self.connected_mark.set_size_request(72, 72)
+        self.connection_action_stack.set_transition_type(
+            Gtk.StackTransitionType.CROSSFADE
+        )
+        self.connection_title.set_text("Connect a MediaTek device")
+        self.connection_title.set_visible(True)
+        self.connection_title.remove_css_class("title-2")
+        self.connection_title.add_css_class("title-1")
+        self.connection_illustration.set_visible(True)
+        self.connection_status.set_visible(True)
+        self.connection_status.set_text("Connect a powered-off device to get started.")
+        self.connection_help_button.set_visible(True)
+        self.connection_options_group.set_visible(True)
+        self.connection_action_stack.set_size_request(240, 72)
+        self.connection_action_stack.set_visible_child_name("connect")
+        self.connect_button.set_label("Start device detection")
+        self._update_navigation_visibility()
+
+    def _reconnect_device(self, *_args):
+        self._disconnect_device()
+        self.connect_backend()
 
     def _update_navigation_visibility(self):
         connected = self.device_connected
@@ -1289,7 +1391,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connect_button.set_sensitive(False)
         self.spinner.set_opacity(1)
         self.spinner.start()
-        self.connection_icon.set_from_icon_name("phone-symbolic")
+        self.connection_illustration.set_visible(True)
         self.device_details.set_visible(False)
         self.connection_title.set_text("Connecting to your device")
         self._set_connection_phase((
@@ -1421,7 +1523,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_status.set_text("")
         # Once connected, turn the setup page into a quiet success state with
         # the illustration as its focal point.
-        self.connection_icon.set_visible(False)
+        self.connection_illustration.set_visible(False)
         self.connection_status.set_visible(False)
         self.connection_help_button.set_visible(False)
         self.spinner.set_visible(False)
@@ -1457,8 +1559,15 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connected_mark.queue_draw()
         if progress >= 1.0:
             self.connected_mark_started_at = None
+            self.connection_success_timeout = GLib.timeout_add(250, self._show_flash_after_success)
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
+
+    def _show_flash_after_success(self):
+        self.connection_success_timeout = None
+        if self.device_connected:
+            self.stack.set_visible_child_name("partitions")
+        return GLib.SOURCE_REMOVE
 
     def _draw_connected_mark(self, _area, context, width, height):
         context.save()

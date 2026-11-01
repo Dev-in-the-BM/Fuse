@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 240"
+     role="img" aria-labelledby="title desc">
+  <title id="title">Phone and USB cable ready to connect</title>
+  <desc id="desc">A powered-off phone beside an unplugged USB cable.</desc>
+  <g id="backdrop">
+    <path d="M42 125c-7-36 18-78 52-83 30-4 48 16 75 12 37-6 82-1 111 21 33 25 45 65 25 99-20 34-59 36-93 34-44-3-72 22-115 12-43-10-64-53-55-95Z"
+          fill="#dedffa"/>
+    <circle cx="81" cy="68" r="10" fill="#f6d32d"/>
+    <circle cx="279" cy="68" r="8" fill="#dc8add"/>
+    <path d="m296 134 5 10 11 2-8 7 2 11-10-5-10 5 2-11-8-7 11-2Z" fill="#ff7800"/>
+  </g>
+  <g id="phone">
+    <path d="M109 52c0-12 9-21 21-21h99c12 0 21 9 21 21v139c0 12-9 21-21 21h-99c-12 0-21-9-21-21Z" fill="#4f3d78"/>
+    <path d="M117 55c0-8 6-15 14-15h97c8 0 14 7 14 15v130H117Z" fill="#3d345d"/>
+    <path d="M164 47h30" fill="none" stroke="#9385b6" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="203" cy="47" r="2.5" fill="#9385b6"/>
+    <rect x="128" y="63" width="93" height="104" rx="10" fill="#62588c"/>
+    <path d="M174 97v18m-12-11a19 19 0 1 0 25 0" fill="none" stroke="#98c1f1" stroke-width="6" stroke-linecap="round"/>
+    <path d="M146 143h56" fill="none" stroke="#a99ed0" stroke-width="4" stroke-linecap="round"/>
+    <path d="M144 212h68" fill="none" stroke="#352a53" stroke-width="5" stroke-linecap="round"/>
+    <path d="M169 214v7h20v-7" fill="#ffbf6b"/>
+    <rect x="253" y="96" width="9" height="30" rx="4.5" fill="#76669c"/>
+  </g>
+  <g id="usb-cable">
+    <path d="M179 220c0 12 9 15 22 15h35c18 0 28-10 28-27v-12" fill="none" stroke="#3584e4" stroke-width="9" stroke-linecap="round"/>
+    <path d="M179 220c0 12 9 15 22 15h35c18 0 28-10 28-27v-12" fill="none" stroke="#98c1f1" stroke-width="3" stroke-linecap="round"/>
+    <g transform="translate(242 161) rotate(8 19 18)">
+      <rect x="5" y="10" width="28" height="23" rx="6" fill="#ffbf6b"/>
+      <rect x="10" y="3" width="18" height="12" rx="4" fill="#e66100"/>
+      <path d="M14 7v4m10-4v4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>
