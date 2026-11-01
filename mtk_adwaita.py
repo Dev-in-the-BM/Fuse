@@ -1828,9 +1828,19 @@ class MtkWindow(Adw.ApplicationWindow):
             names = sorted(self.partition_rows, key=str.casefold)
         else:
             names = [name for name, _size in self.partitions if name in self.partition_rows]
-        # Keep pinned partitions at the top without disturbing the chosen sort
-        # order within the pinned and unpinned groups.
-        names.sort(key=lambda name: name not in self.pinned_partitions)
+        # Prioritize the current task, then preserve the selected ordering
+        # (device order or alphabetical) inside each priority group.
+        def priority(name):
+            check = self.partition_checks[name][0]
+            if check.get_active():
+                return 0
+            if name in self.partition_images:
+                return 1
+            if name in self.pinned_partitions:
+                return 2
+            return 3
+
+        names.sort(key=priority)
 
         child = self.partition_list.get_first_child()
         while child is not None:
@@ -1951,6 +1961,7 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _selection_changed(self):
         count = len(self._selected_partitions())
+        self._refresh_partition_view()
         self.selection_count.set_text(f"{count} selected")
         enabled = self.device_connected and count > 0 and not self.operation_busy
         self.read_button.set_sensitive(enabled)
