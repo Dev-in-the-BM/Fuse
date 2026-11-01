@@ -1259,8 +1259,10 @@ class MtkWindow(Adw.ApplicationWindow):
         action_group = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.read_button = Gtk.Button(label="Read…")
         self.read_button.connect("clicked", lambda *_: self._choose_directory("read"))
+        self.choose_folder_button = Gtk.Button(label="Choose from folder…")
+        self.choose_folder_button.connect("clicked", lambda *_: self._choose_directory("write"))
         self.write_button = Gtk.Button(label="Write…")
-        self.write_button.connect("clicked", lambda *_: self._choose_directory("write"))
+        self.write_button.connect("clicked", lambda *_: self._write_assigned_partitions())
         self.read_button.add_css_class("suggested-action")
         self.write_button.add_css_class("suggested-action")
         self.erase_button = Gtk.Button(icon_name="user-trash-symbolic")
@@ -1276,6 +1278,9 @@ class MtkWindow(Adw.ApplicationWindow):
             button.set_size_request(120, 44)
             action_sizes.add_widget(button)
             button.set_sensitive(False)
+        self.choose_folder_button.add_css_class("pill")
+        self.choose_folder_button.set_size_request(190, 44)
+        self.choose_folder_button.set_sensitive(False)
         self.erase_button.add_css_class("pill")
         self.erase_button.set_size_request(44, 44)
         self.erase_button.set_sensitive(False)
@@ -1316,6 +1321,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.dump_gpt = Gtk.CheckButton(label="Include GPT metadata when reading")
         self.dump_gpt.set_active(True)
         box.append(self.select_all)
+        box.append(self.choose_folder_button)
 
         self.partition_list = Gtk.ListBox()
         self.partition_list.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -1948,21 +1954,19 @@ class MtkWindow(Adw.ApplicationWindow):
         self.selection_count.set_text(f"{count} selected")
         enabled = self.device_connected and count > 0 and not self.operation_busy
         self.read_button.set_sensitive(enabled)
-        self.write_button.set_sensitive(enabled)
+        self.choose_folder_button.set_sensitive(
+            self.device_connected and not self.operation_busy
+        )
+        self.write_button.set_sensitive(self.device_connected and not self.operation_busy and count > 0)
         self.erase_button.set_sensitive(enabled)
 
     def _choose_directory(self, operation):
         selected = self._selected_partitions()
-        if not selected:
+        if not selected and operation != "write":
             self.toast_overlay.add_toast(Adw.Toast(title="Select at least one partition"))
             return
-        if operation == "write" and all(name in self.partition_images for name, _ in selected):
-            self._start_partition_write(selected, {
-                name: self.partition_images[name] for name, _ in selected
-            })
-            return
         dialog = Gtk.FileChooserNative.new(
-            "Choose output folder" if operation == "read" else "Choose folder containing images",
+            "Choose output folder" if operation == "read" else "Choose folder containing partition images",
             self, Gtk.FileChooserAction.SELECT_FOLDER, "_Select", "_Cancel"
         )
         dialog.connect("response", self._directory_chosen, operation, selected)
@@ -2013,6 +2017,20 @@ class MtkWindow(Adw.ApplicationWindow):
             image_check.set_active(True)
         self.toast_overlay.add_toast(Adw.Toast(title=f"Image assigned to {name}"))
 
+    def _write_assigned_partitions(self):
+        selected = self._selected_partitions()
+        if not selected:
+            self.toast_overlay.add_toast(Adw.Toast(title="Choose images or select partitions first"))
+            return
+        missing = [name for name, _size in selected if name not in self.partition_images]
+        if missing:
+            self.toast_overlay.add_toast(Adw.Toast(
+                title=f"Choose an image for: {', '.join(missing[:3])}"
+            ))
+            return
+        images = {name: self.partition_images[name] for name, _size in selected}
+        self._start_partition_write(selected, images)
+
     def _start_partition_write(self, selected, images):
         names = ", ".join(name for name, _ in selected)
         self._confirm_action(
@@ -2053,25 +2071,45 @@ class MtkWindow(Adw.ApplicationWindow):
                                     selected, folder, include_gpt,
                                     total=selected[0][1] if len(selected) == 1 else None)
             else:
+                # Match every GPT partition against files anywhere under the
+                # chosen folder. Prefer .bin when both formats are present;
+                # sorted paths make duplicate matches deterministic.
+                files_by_name = {}
+                for root, dirs, files in os.walk(folder):
+                    dirs.sort(key=str.casefold)
+                    for filename in sorted(files, key=str.casefold):
+                        stem, extension = os.path.splitext(filename)
+                        if extension.casefold() not in (".bin", ".img"):
+                            continue
+                        files_by_name.setdefault(stem.casefold(), []).append(
+                            (extension.casefold(), os.path.join(root, filename))
+                        )
+
                 images = {}
-                missing = []
-                for name, _size in selected:
-                    if name in self.partition_images:
-                        images[name] = self.partition_images[name]
-                        continue
-                    candidates = (f"{name}.bin", f"{name}.img")
-                    image = next((os.path.join(folder, filename) for filename in candidates
-                                  if os.path.isfile(os.path.join(folder, filename))), None)
-                    if image is None:
-                        missing.append(name)
-                    else:
-                        images[name] = image
-                if missing:
+                for name, _size in self.partitions:
+                    matches = files_by_name.get(name.casefold(), [])
+                    if matches:
+                        matches.sort(key=lambda match: (match[0] != ".bin", match[1].casefold()))
+                        images[name] = matches[0][1]
+
+                if not images:
                     self.toast_overlay.add_toast(Adw.Toast(
-                        title=f"No .bin or .img found for: {', '.join(missing[:3])}"
+                        title="No matching .bin or .img partition images found"
                     ))
                 else:
-                    self._start_partition_write(selected, images)
+                    for name, filename in images.items():
+                        self.partition_images[name] = filename
+                        self.partition_image_status[name].set_visible(True)
+                        self.partition_rows[name].set_subtitle(
+                            f"{self._format_size(self.partition_checks[name][1])} · "
+                            f"{os.path.basename(filename)}"
+                        )
+                        check = self.partition_checks[name][0]
+                        if not check.get_active():
+                            check.set_active(True)
+                    self.toast_overlay.add_toast(Adw.Toast(
+                        title=f"Assigned images to {len(images)} matching partition(s)"
+                    ))
         dialog.destroy()
 
     def _confirm_erase(self):
