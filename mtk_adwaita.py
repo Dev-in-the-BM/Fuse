@@ -116,8 +116,6 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_progress_complete = True
         self.identify_has_progress = False
         self.identify_waiting_on_read = False
-        self.identify_read_in_progress = False
-        self.identify_read_started_at = None
         self.identify_window = None
         self.partition_checks = {}
         self.partition_rows = {}
@@ -1109,19 +1107,46 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_cancel_button.set_visible(False)
             box.append(actions)
             box.append(setup_controls)
+            self.identify_phase = Gtk.Label(label="No image folder selected", xalign=0)
+            self.identify_phase.add_css_class("heading")
+            self.identify_phase.set_ellipsize(Pango.EllipsizeMode.END)
+            self.identify_phase.set_single_line_mode(True)
+            self.identify_phase.set_hexpand(True)
+            box.append(self.identify_phase)
             self.identify_progress = Gtk.ProgressBar()
-            self.identify_progress.set_show_text(True)
+            self.identify_progress.set_show_text(False)
             self.identify_progress.set_visible(False)
             box.append(self.identify_progress)
-            self.identify_count = Gtk.Label(label="No image folder selected", xalign=0)
-            self.identify_count.set_wrap(True)
+            self.identify_count = Gtk.Label(label="Choose an image folder to begin", xalign=0)
+            self.identify_count.set_ellipsize(Pango.EllipsizeMode.END)
+            self.identify_count.set_single_line_mode(True)
+            self.identify_count.set_hexpand(True)
             self.identify_count.add_css_class("dimmed")
             box.append(self.identify_count)
-            self.identify_results = Gtk.Label(label="", xalign=0, yalign=0)
-            self.identify_results.set_selectable(True)
-            self.identify_results.set_wrap(True)
+            self.identify_results = Gtk.Box(
+                orientation=Gtk.Orientation.VERTICAL, spacing=8
+            )
             self.identify_results.set_hexpand(True)
             self.identify_results.set_vexpand(True)
+            self.identify_results.set_visible(False)
+            self.identify_results_heading = Gtk.Label(label="Partition results", xalign=0)
+            self.identify_results_heading.add_css_class("heading")
+            self.identify_results.append(self.identify_results_heading)
+            self.identify_results_summary = Gtk.Label(xalign=0)
+            self.identify_results_summary.add_css_class("dimmed")
+            self.identify_results_summary.set_single_line_mode(True)
+            self.identify_results_summary.set_ellipsize(Pango.EllipsizeMode.END)
+            self.identify_results_summary.set_hexpand(True)
+            self.identify_results.append(self.identify_results_summary)
+            self.identify_result_list = Gtk.ListBox()
+            self.identify_result_list.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.identify_result_list.add_css_class("boxed-list")
+            self.identify_results.append(self.identify_result_list)
+            self.identify_results_note = Gtk.Label(xalign=0, wrap=True)
+            self.identify_result_list.set_vexpand(False)
+            self.identify_result_list.set_hexpand(True)
+            self.identify_results_note.add_css_class("dimmed")
+            self.identify_results.append(self.identify_results_note)
             box.append(self.identify_results)
             box.append(advanced_controls)
             toolbar.set_content(self._scrolled(clamp))
@@ -1133,14 +1158,14 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_restore_started = True
             if self.identify_directory:
                 if os.path.isdir(self.identify_directory):
-                    self.identify_count.set_text(
-                        f"Restoring cached index for:\n{self.identify_directory}"
+                    self._set_identify_status(
+                        "Preparing firmware images", "Checking the selected folder"
                     )
                     self._index_identify_folder(False)
                     GLib.idle_add(self._watch_identify_directory)
                 else:
-                    self.identify_count.set_text(
-                        f"Previously selected folder is unavailable:\n{self.identify_directory}"
+                    self._set_identify_status(
+                        "Image folder unavailable", "Choose another folder to continue"
                     )
 
     @staticmethod
@@ -1396,6 +1421,12 @@ class MtkWindow(Adw.ApplicationWindow):
         content.append(Gtk.Image.new_from_icon_name(icon_name))
         content.append(Gtk.Label(label=label))
         return content
+
+    def _set_identify_status(self, phase, detail=""):
+        if not hasattr(self, "identify_phase"):
+            return
+        self.identify_phase.set_text(phase)
+        self.identify_count.set_text(detail)
 
     def _partition_page(self):
         return self._partitions_content()
@@ -2586,14 +2617,15 @@ class MtkWindow(Adw.ApplicationWindow):
             if show_progress:
                 self.identify_has_progress = False
                 self.identify_waiting_on_read = False
-                self.identify_read_in_progress = False
-                self.identify_read_started_at = None
                 self.identify_progress.set_fraction(0)
-                self.identify_progress.set_text("Starting…")
                 self.identify_progress.pulse()
+                self._set_identify_status(
+                    "Verifying firmware" if title == "Verify firmware matches"
+                    else "Identifying firmware",
+                    "Preparing image checks",
+                )
             elif not running:
                 self.identify_progress.set_fraction(0)
-                self.identify_progress.set_text("")
 
     def _pulse_progress(self):
         if not self.operation_thread or not self.operation_thread.is_alive():
@@ -2611,9 +2643,6 @@ class MtkWindow(Adw.ApplicationWindow):
                 and self.identify_progress.get_visible()
                 and self.identify_waiting_on_read):
             self.identify_progress.pulse()
-            elapsed = max(0, int(time.monotonic() - self.identify_read_started_at))
-            activity = "Device read in progress" if self.identify_read_in_progress else "Working"
-            self.identify_progress.set_text(f"{activity} · {elapsed}s")
         return GLib.SOURCE_CONTINUE
 
     def _operation_finished(self, title, error, result=None):
@@ -2623,6 +2652,10 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_cancel_button.set_sensitive(False)
             self.identify_cancel_button.set_visible(False)
             self.identify_progress.set_visible(False)
+            self._set_identify_status(
+                "Identification failed" if error else "Identification complete",
+                "See Logs for details" if error else "Review the partition results below",
+            )
         if error:
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title} failed. See Logs for details.")
@@ -2656,8 +2689,10 @@ class MtkWindow(Adw.ApplicationWindow):
             if folder:
                 self.identify_directory = folder.get_path()
                 set_firmware_image_directory(self.identify_directory)
-                self.identify_count.set_text("Preparing firmware image folder…")
-                self.identify_results.set_text("")
+                self._set_identify_status(
+                    "Preparing firmware images", "Scanning the selected folder"
+                )
+                self._clear_identify_results()
                 self._clear_partition_sources()
                 self._index_identify_folder(False)
                 # Start discovery before touching old monitor state. A watcher
@@ -2683,9 +2718,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_cancel_button.set_visible(True)
         self.identify_progress.set_visible(True)
         self.identify_progress.set_fraction(0)
-        self.identify_progress.set_text("Starting recursive folder scan…")
         self.identify_progress.pulse()
-        self.identify_count.set_text(f"Starting recursive scan under:\n{directory}")
+        self._set_identify_status(
+            "Scanning image folder", "Finding firmware images"
+        )
 
         def index_worker():
             try:
@@ -2720,7 +2756,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_cancel_button.set_visible(False)
         self.identify_progress.set_visible(False)
         if error:
-            self.identify_count.set_text(f"Indexing failed: {error}")
+            self._set_identify_status("Image indexing failed", "See Logs for details")
             self.toast_overlay.add_toast(Adw.Toast(title=f"Indexing failed: {error}"))
         else:
             self._identify_indexed(count or 0)
@@ -2728,50 +2764,46 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _identify_indexed(self, count):
         self.identify_progress_complete = True
-        self.identify_count.set_text(
-            f"{count:,} firmware images ready" if count
-            else "No .img or .bin firmware images found"
+        self._set_identify_status(
+            "Ready" if count else "No firmware images found",
+            f"{count:,} images available" if count else "Choose a folder containing .img or .bin files",
         )
         for button in (self.identify_force_button, self.identify_scan_button,
                        self.identify_verify_button):
             button.set_sensitive(bool(self.device_connected and count))
         return GLib.SOURCE_REMOVE
 
-    def _set_identify_progress_text(self, generation, text):
-        if generation == self.identify_generation and not self.identify_progress_complete:
-            self.identify_count.set_text(text)
-        return GLib.SOURCE_REMOVE
-
     def _update_identify_phase_progress(self, generation, done, total, message):
         if generation != self.identify_generation or self.identify_progress_complete:
             return GLib.SOURCE_REMOVE
         self.identify_has_progress = True
-        self.identify_count.set_text(message or f"Searching firmware images · {total:,} found")
         if message.startswith("Comparing coarse fingerprints"):
             self.identify_refine_started_at = None
             self.identify_progress.set_fraction(0)
-            self.identify_progress.set_text("Comparing coarse chunks…")
+            self._set_identify_status(
+                "Preparing image index", "Comparing firmware fingerprints"
+            )
             self.identify_progress.pulse()
         elif message.startswith("Refining") or message.startswith("Fingerprinting"):
             if self.identify_refine_started_at is None:
                 self.identify_refine_started_at = time.monotonic()
             fraction = min(1.0, done / total) if total else 0.0
             self.identify_progress.set_fraction(fraction)
-            progress_text = f"{done:,} / {total:,} chunks"
-            elapsed = time.monotonic() - self.identify_refine_started_at
-            if done and elapsed >= 0.5 and done < total:
-                remaining = int((total - done) * elapsed / done)
-                progress_text += f" · about {self._format_duration(remaining)} remaining"
-            self.identify_progress.set_text(progress_text)
+            self._set_identify_status(
+                "Improving image index", f"{done:,} of {total:,} fingerprint chunks"
+            )
         elif message.startswith("Fingerprint refinement complete"):
             self.identify_progress.set_fraction(1)
-            self.identify_progress.set_text("Fingerprints complete")
+            self._set_identify_status("Image index ready", "Firmware fingerprints updated")
             self.identify_refine_started_at = None
         elif total:
             self.identify_progress.set_fraction(min(1.0, done / total))
-            self.identify_progress.set_text(f"{done:,} / {total:,} images")
+            self._set_identify_status(
+                "Indexing firmware images", f"{done:,} of {total:,} images"
+            )
         else:
             self.identify_progress.set_fraction(0)
+            self._set_identify_status("Preparing image index", "Checking firmware images")
             self.identify_progress.pulse()
         return GLib.SOURCE_REMOVE
 
@@ -2779,8 +2811,9 @@ class MtkWindow(Adw.ApplicationWindow):
         if generation != self.identify_generation or self.identify_progress_complete:
             return GLib.SOURCE_REMOVE
         self.identify_has_progress = True
-        self.identify_count.set_text("Searching firmware image folders…")
-        self.identify_progress.set_text(f"{directories:,} folders · {found:,} images")
+        self._set_identify_status(
+            "Scanning image folder", f"{found:,} images found in {directories:,} folders"
+        )
         return GLib.SOURCE_REMOVE
 
     def _update_identify_file_progress(self, path, number, image_count, done, total,
@@ -2790,13 +2823,14 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_has_progress = True
         if total:
             fraction = min(1.0, done / total)
-            self.identify_count.set_text(f"Fingerprinting image {number:,} of {image_count:,}")
             self.identify_progress.set_fraction(fraction)
-            self.identify_progress.set_text(
-                f"{fraction:.0%} · {self._format_size(done)} / {self._format_size(total)}"
+            self._set_identify_status(
+                "Reading firmware images", f"Image {number:,} of {image_count:,}"
             )
         else:
-            self.identify_count.set_text(f"Fingerprinting image {number:,} of {image_count:,}")
+            self._set_identify_status(
+                "Reading firmware images", f"Image {number:,} of {image_count:,}"
+            )
         return GLib.SOURCE_REMOVE
 
     def _watch_identify_directory(self):
@@ -2878,31 +2912,56 @@ class MtkWindow(Adw.ApplicationWindow):
     def _cancel_identify(self, *_args):
         if self.identify_cancel:
             self.identify_cancel.set()
-            self.identify_count.set_text("Cancelling firmware scan…")
+            self._set_identify_status("Cancelling", "Stopping after the current read")
 
     def _update_identification_progress(self, partition, device_bytes, message, fraction):
-        """Show scan phase before a DA call and update after each completed read."""
+        """Show a steady, concise phase and detail while matching firmware."""
         self.identify_has_progress = True
-        reading = (
-            "sample" in message
-            or "distributed validation" in message
-            or "full verification block" in message
-        )
+        reading = any(term in message for term in (
+            "sample", "distributed validation", "full verification block", "verified through",
+        ))
         waiting = fraction is None or reading
-        if waiting and not self.identify_waiting_on_read:
-            self.identify_read_started_at = time.monotonic()
         self.identify_waiting_on_read = waiting
-        self.identify_read_in_progress = reading
-        self.identify_count.set_text(message)
+        full = self.operation_title == "Verify firmware matches"
+        phase = "Verifying firmware" if full else "Identifying firmware"
+        detail = "Preparing image checks"
+
+        partition_match = re.match(r"Partition (\d+)/(\d+) · (.*)", message)
+        if message.startswith("Validating indexed images"):
+            phase, detail = "Preparing firmware images", "Checking image files"
+        elif message.startswith(("Rechecking selected tree", "Reindexing changed image",
+                                 "Checking image cache")):
+            phase, detail = "Updating image index", "Checking the selected folder"
+        elif "Comparing coarse image fingerprints" in message:
+            phase, detail = "Comparing firmware images", "Choosing useful comparison samples"
+        elif message.startswith("Found "):
+            phase, detail = "Comparing firmware images", "Preparing image samples"
+        elif "Checking fine fingerprints" in message:
+            phase, detail = "Comparing firmware images", "Checking image samples"
+        elif partition_match:
+            number, count, activity = partition_match.groups()
+            detail = f"Partition {number} of {count} · "
+            if "preparing candidates" in activity:
+                detail += "Preparing image candidates"
+            elif "finding distinguishing offsets" in activity or "reusing the content-derived" in activity:
+                phase = "Comparing firmware images"
+                detail += "Comparing image samples"
+            elif "full verification block" in activity or "verified through" in activity:
+                detail += "Reading image data"
+            elif "sample" in activity or "distributed validation" in activity:
+                detail += "Reading device samples"
+            elif "complete ·" in activity:
+                detail += "Partition check complete"
+            else:
+                detail += "Checking image data"
+        elif "sample" in message or "full verification block" in message:
+            detail = "Reading device samples"
+        self._set_identify_status(phase, detail)
         if fraction is None:
             self.identify_progress.pulse()
         else:
             fraction = max(0.0, min(1.0, float(fraction)))
             self.identify_progress.set_fraction(fraction)
-            if not waiting:
-                self.identify_progress.set_text(f"{fraction:.0%} of partitions")
-            else:
-                self.identify_progress.set_text("Reading device…")
         return GLib.SOURCE_REMOVE
 
     def _scan_images(self, full):
@@ -2916,9 +2975,11 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_cancel = cancel_token
         self.identify_cancel_button.set_sensitive(True)
         self.identify_cancel_button.set_visible(True)
-        self.identify_count.set_text(
-            "Preparing full verification…" if full else "Preparing partition identification…"
+        self._set_identify_status(
+            "Verifying firmware" if full else "Identifying firmware",
+            "Preparing image checks",
         )
+        self._clear_identify_results()
 
         def scan_worker():
             mtk = self.backend.mtk
@@ -2940,8 +3001,24 @@ class MtkWindow(Adw.ApplicationWindow):
         self._run_operation("Verify firmware matches" if full else "Identify firmware", scan_worker)
 
     def _show_identify_results(self, results):
-        lines = []
-        for partition, matches, status, coverage in results:
+        while child := self.identify_result_list.get_first_child():
+            self.identify_result_list.remove(child)
+        self.identify_results_note.set_text("")
+        self.identify_results_note.set_visible(False)
+        verified_count = sum(status.startswith("Verified") for _, _, status, _ in results)
+        likely_count = sum(status.startswith("Likely match") for _, _, status, _ in results)
+        review_count = sum(len(matches) > 1 or status.startswith("Unknown")
+                           for _, matches, status, _ in results)
+        summary = [f"{len(results)} partitions checked"]
+        if verified_count:
+            summary.append(f"{verified_count} verified")
+        if likely_count:
+            summary.append(f"{likely_count} likely matches")
+        if review_count:
+            summary.append(f"{review_count} need review")
+        self.identify_results_summary.set_text(" · ".join(summary))
+
+        for partition, matches, status, _coverage in results:
             if partition in self.partition_sources:
                 if len(matches) == 1 and status.startswith(("Likely match", "Verified")):
                     source = os.path.realpath(os.path.join(
@@ -2959,20 +3036,97 @@ class MtkWindow(Adw.ApplicationWindow):
                 self.partition_source_labels[partition].set_visible(
                     self.show_partition_sources.get_active()
                 )
-            if matches:
-                names = ", ".join(f"{name} ({size:,} B)" for name, size in matches)
-            else:
-                names = "No matching image"
-            ambiguity = " · ambiguous; candidates indistinguishable" if len(matches) > 1 else ""
             geometry = self.partition_geometry.get(partition, {})
-            prefix = (" · remaining partition tail unverified"
-                      if matches and any(size < geometry.get("size", size) for _name, size in matches)
-                      else "")
-            lines.append(f"{partition}: {names}\n  {status} · {coverage}{ambiguity}{prefix}")
-        if self.partition_geometry:
-            lines.append("Logical partitions inside super are not scanned unless the active DA exposes a reliable mapping.")
-        self.identify_results.set_text("\n\n".join(lines) if lines else "No accessible partitions.")
+            if status.startswith("Verified whole-partition equality"):
+                outcome = "Verified · whole partition"
+                icon = "emblem-ok-symbolic"
+            elif status.startswith("Verified image-content match"):
+                outcome = "Verified image match"
+                icon = "emblem-ok-symbolic"
+            elif status.startswith("Likely match"):
+                outcome = "Likely match · not fully verified"
+                icon = "dialog-warning-symbolic"
+            elif status == "Different":
+                outcome = "No match found"
+                icon = "dialog-information-symbolic"
+            elif status.startswith("No size-compatible"):
+                outcome = "No matching image"
+                icon = "dialog-information-symbolic"
+            elif status.startswith("Unknown"):
+                outcome = "Could not confirm a match"
+                icon = "dialog-warning-symbolic"
+            else:
+                outcome = status
+                icon = "dialog-information-symbolic"
+
+            warnings = []
+            if status.startswith("Unknown:"):
+                reason = status.split(":", 1)[1].strip()
+                if "read failed" in reason:
+                    warnings.append("Device read failed")
+                elif "image changed" in reason:
+                    warnings.append("Image files changed during matching")
+                elif "no defined" in reason:
+                    warnings.append("No readable image data to compare")
+            if "; DONT_CARE regions unverified" in status:
+                warnings.append("Some image regions could not be checked")
+            if matches and any(size < geometry.get("size", size) for _name, size in matches):
+                warnings.append("Partition tail not checked")
+            if matches:
+                if len(matches) > 1:
+                    outcome += f" · {len(matches):,} possible images"
+                else:
+                    outcome += f" · {os.path.basename(matches[0][0])}"
+            if warnings and matches:
+                outcome += " · Review details"
+            elif warnings:
+                outcome += " · " + warnings[0]
+
+            if matches:
+                row = Adw.ExpanderRow(title=partition, subtitle=outcome)
+                row.set_subtitle_lines(2)
+                for name, size in matches[:10]:
+                    candidate = Adw.ActionRow(
+                        title=os.path.basename(name),
+                        subtitle=f"{self._format_size(size)} · {name}",
+                    )
+                    candidate.set_subtitle_lines(2)
+                    candidate.set_tooltip_text(name)
+                    row.add_row(candidate)
+                if len(matches) > 10:
+                    row.add_row(Adw.ActionRow(
+                        title=f"{len(matches) - 10:,} more candidates",
+                        subtitle="Additional possible images were omitted from this list",
+                    ))
+                for warning in warnings:
+                    row.add_row(Adw.ActionRow(title="Review", subtitle=warning))
+            else:
+                row = Adw.ActionRow(title=partition, subtitle=outcome)
+                row.set_activatable(False)
+            row.add_prefix(Gtk.Image.new_from_icon_name(icon))
+            self.identify_result_list.append(row)
+
+        if any(name.casefold() == "super" for name in self.partition_geometry):
+            self.identify_results_note.set_text(
+                "Logical partitions inside super are listed only when the device exposes them."
+            )
+            self.identify_results_note.set_visible(True)
+        if not results:
+            empty = Adw.ActionRow(
+                title="No accessible partitions",
+                subtitle="Connect a device and load its partition map",
+            )
+            self.identify_result_list.append(empty)
+        self.identify_results.set_visible(True)
         return GLib.SOURCE_REMOVE
+
+    def _clear_identify_results(self):
+        while child := self.identify_result_list.get_first_child():
+            self.identify_result_list.remove(child)
+        self.identify_results_summary.set_text("")
+        self.identify_results_note.set_text("")
+        self.identify_results_note.set_visible(False)
+        self.identify_results.set_visible(False)
 
     def _clear_partition_sources(self):
         for partition, label in self.partition_source_labels.items():
