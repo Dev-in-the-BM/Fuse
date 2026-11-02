@@ -16,7 +16,29 @@ Install MTK Client from **Preferences → Backend installation**, or choose an e
 MTKCLIENT_DIR=/path/to/mtk-client ./run.sh
 ```
 
-Device detection and initialization use the existing MTK backend in a background thread. The Flash view supports GPT partition read/write/erase, includes device-order or alphabetical sorting, filters by partition name (Ctrl+F), and supports right-click pinning. Checked partitions appear first, followed by unchecked partitions with assigned images, pinned partitions, then all others; the selected sort order is preserved within each group. Assigning an image by drop or file chooser selects that partition automatically. Sort and search do not discard partition selections. Its Chip storage section supports whole-area read/write; Utilities contains key generation, bootloader lock/unlock, and Logs. Backend messages are shown in Logs and printed to the launching terminal. Destructive actions require confirmation. Validate hardware behavior on a supported device before relying on these operations.
+## Screenshots
+
+**Connecting to a device**
+
+![Device connection screen](screenshots/connecting.png)
+
+**Managing partitions**
+
+![GPT partition management screen](screenshots/flashing-screen.png)
+
+**Finding firmware image sources**
+
+![Firmware image source identification screen](screenshots/source-indentifier.png)
+
+## Features
+
+- Read, write, and erase GPT partitions. Search, sort, and pin partitions.
+- Find firmware image sources: choose a folder of candidate images. Fuse compares their fingerprints with device partitions and shows which image likely produced each partition. Full verification is also available.
+- Read and write whole-device storage.
+- Generate device keys and lock or unlock the bootloader.
+- Use an existing MTK Client installation to save storage, or download and install the backend with one click.
+
+Device operations run through the MTK Client backend. Destructive actions require confirmation. Hardware behavior has not yet been validated end-to-end; test on a supported device before relying on these operations.
 
 ## GNOME app-grid shortcut
 
