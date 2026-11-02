@@ -3282,7 +3282,22 @@ class MtkWindow(Adw.ApplicationWindow):
             return
         directory = self.identify_directory
         image_index = self.identify_index
-        partition_geometry = dict(self.partition_geometry)
+        # Use the same order the Flashing tab currently presents, including
+        # its selected/image/pinned priority groups, rather than GPT order.
+        displayed_names = []
+        row = self.partition_list.get_first_child()
+        while row is not None:
+            name = next((name for name, candidate in self.partition_rows.items()
+                         if candidate is row), None)
+            if name in self.partition_geometry:
+                displayed_names.append(name)
+            row = row.get_next_sibling()
+        displayed_names.extend(
+            name for name in self.partition_geometry if name not in displayed_names
+        )
+        partition_geometry = {
+            name: self.partition_geometry[name] for name in displayed_names
+        }
         cancel_token = threading.Event()
         self.identify_cancel = cancel_token
         self.identify_cancel_button.set_sensitive(True)
