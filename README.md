@@ -27,7 +27,7 @@ An modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4
 
 
 <details>
-  <summary>I put this part here because your supposed to to make it look profeessional.
+  <summary>I put this part here because your supposed to do it to make it look professional.
   I didn't write it or check it for accuracy.
   </summary>
 ## Run
