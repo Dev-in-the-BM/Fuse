@@ -11,9 +11,11 @@ from types import SimpleNamespace
 
 import cairo
 
-from app_settings import (get_advanced_logging, get_backend_dir,
+from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
                           get_pinned_partitions, set_advanced_logging,
                           set_backend_dir, set_pinned_partitions)
+from mtk_image_identify import (ImageIndex, diagnose_da_reads,
+                                identify as identify_images, make_da_reader)
 
 import gi
 
@@ -89,8 +91,24 @@ class MtkWindow(Adw.ApplicationWindow):
         self.loader_path = None
         self.preloader_path = None
         self.partitions = []
+        self.partition_geometry = {}
+        self.identify_directory = None
+        self.identify_index = None
+        self.identify_monitor = None
+        self.identify_monitors = []
+        self.identify_monitor_stack = []
+        self.identify_monitor_walk_source = None
+        self.identify_poll_source = None
+        self.identify_debounce = None
+        self.identify_pending_change = False
+        self.identify_cancel = None
+        self.identify_generation = 0
+        self.identify_progress_complete = True
+        self.identify_window = None
         self.partition_checks = {}
         self.partition_rows = {}
+        self.partition_source_labels = {}
+        self.partition_sources = {}
         self.partition_pin_status = {}
         self.partition_images = {}
         self.pinned_partitions = set(get_pinned_partitions())
@@ -994,11 +1012,13 @@ class MtkWindow(Adw.ApplicationWindow):
         button.update_property([Gtk.AccessibleProperty.LABEL], ["Main menu"])
         menu = Gio.Menu()
         menu.append("Connect", "win.show-connect")
+        menu.append("Firmware image matching", "win.show-identify")
         menu.append("Logs", "win.show-logs")
         menu.append("Settings", "win.show-settings")
         actions = Gio.SimpleActionGroup()
         for name, callback in (
             ("show-connect", lambda *_: self.show_page("device")),
+            ("show-identify", self._open_image_matching),
             ("show-logs", lambda *_: self.show_page("logs")),
             ("show-settings", self.open_preferences),
         ):
@@ -1008,6 +1028,76 @@ class MtkWindow(Adw.ApplicationWindow):
         self.insert_action_group("win", actions)
         button.set_menu_model(menu)
         return button
+
+    def _open_image_matching(self, *_args):
+        if self.identify_window is None:
+            window = Adw.Window(
+                transient_for=self, modal=True, title="Firmware image matching",
+                default_width=780, default_height=660,
+            )
+            toolbar = Adw.ToolbarView()
+            toolbar.add_top_bar(Adw.HeaderBar())
+            box, clamp = self._page_column(760)
+            box.append(self._page_heading(
+                "Identify firmware images",
+                "Search the selected folder and all subfolders. Matches are content-based; quick results are not full verification.",
+            ))
+            self.identify_folder_button = Gtk.Button(label="Choose image folder…")
+            self.identify_folder_button.connect("clicked", self._choose_identify_folder)
+            self.identify_force_button = Gtk.Button(label="Force reindex")
+            self.identify_force_button.connect("clicked", lambda *_: self._index_identify_folder(True))
+            self.identify_scan_button = Gtk.Button(label="Identify partitions")
+            self.identify_scan_button.add_css_class("suggested-action")
+            self.identify_scan_button.connect("clicked", lambda *_: self._scan_images(False))
+            self.identify_verify_button = Gtk.Button(label="Full verification")
+            self.identify_verify_button.connect("clicked", lambda *_: self._scan_images(True))
+            self.identify_cancel_button = Gtk.Button(label="Cancel")
+            self.identify_cancel_button.connect("clicked", self._cancel_identify)
+            self.identify_diagnostic_button = Gtk.Button(label="Read-only DA diagnostic…")
+            self.identify_diagnostic_button.connect("clicked", self._choose_diagnostic_image)
+            controls = Gtk.FlowBox()
+            controls.set_selection_mode(Gtk.SelectionMode.NONE)
+            controls.set_max_children_per_line(3)
+            controls.set_min_children_per_line(2)
+            controls.set_row_spacing(8)
+            controls.set_column_spacing(8)
+            for button in (self.identify_folder_button, self.identify_force_button,
+                           self.identify_scan_button, self.identify_verify_button,
+                           self.identify_cancel_button, self.identify_diagnostic_button):
+                controls.append(button)
+            self.identify_folder_button.set_sensitive(True)
+            for button in (self.identify_force_button, self.identify_scan_button,
+                           self.identify_verify_button, self.identify_cancel_button):
+                button.set_sensitive(False)
+            self.identify_diagnostic_button.set_sensitive(self.device_connected)
+            box.append(controls)
+            self.identify_progress = Gtk.ProgressBar()
+            self.identify_progress.set_show_text(True)
+            self.identify_progress.set_visible(False)
+            box.append(self.identify_progress)
+            self.identify_count = Gtk.Label(label="No image folder selected", xalign=0)
+            self.identify_count.set_wrap(True)
+            self.identify_count.add_css_class("dimmed")
+            box.append(self.identify_count)
+            self.identify_results = Gtk.Label(label="", xalign=0, yalign=0)
+            self.identify_results.set_selectable(True)
+            self.identify_results.set_wrap(True)
+            self.identify_results.set_hexpand(True)
+            self.identify_results.set_vexpand(True)
+            box.append(self.identify_results)
+            toolbar.set_content(self._scrolled(clamp))
+            window.set_content(toolbar)
+            window.connect("close-request", self._hide_image_matching)
+            self.identify_window = window
+        self.identify_diagnostic_button.set_sensitive(self.device_connected)
+        self.identify_window.present()
+
+    @staticmethod
+    def _hide_image_matching(window):
+        # Keep the popup and its progress/results widgets reusable on the next
+        # menu activation; closing the window should not dispose its controls.
+        window.set_visible(False)
+        return True
 
     def show_page(self, name):
         if name == "device" or self.device_connected:
@@ -1068,6 +1158,11 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_action_stack.set_visible_child_name("connected-controls")
 
     def _disconnect_device(self, *_args):
+        if self.operation_busy:
+            self.toast_overlay.add_toast(Adw.Toast(
+                title="Wait for the current operation to finish or cancel it before disconnecting"
+            ))
+            return
         backend = self.backend
         try:
             port = getattr(getattr(backend, "mtk", None), "port", None)
@@ -1081,6 +1176,11 @@ class MtkWindow(Adw.ApplicationWindow):
         self.brom_mode = False
         self.preloader_mode = False
         self.partitions = []
+        self.partition_geometry = {}
+        self._clear_partition_sources()
+        if self.identify_window:
+            self.identify_diagnostic_button.set_sensitive(False)
+        self.show_partition_sources.set_sensitive(False)
         if self.connected_controls is not None:
             self.connection_action_stack.remove(self.connected_controls)
             self.connected_controls = None
@@ -1201,6 +1301,11 @@ class MtkWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _reconnect_device(self, *_args):
+        if self.operation_busy:
+            self.toast_overlay.add_toast(Adw.Toast(
+                title="Wait for the current operation to finish or cancel it before reconnecting"
+            ))
+            return
         self._disconnect_device()
         self.connect_backend()
 
@@ -1318,9 +1423,15 @@ class MtkWindow(Adw.ApplicationWindow):
         self.select_all = Gtk.CheckButton(label="Select visible partitions")
         self.select_all.connect("toggled", self._toggle_all_partitions)
         self.select_all.set_sensitive(False)
+        self.show_partition_sources = Gtk.CheckButton(label="Show image source")
+        self.show_partition_sources.set_sensitive(False)
+        self.show_partition_sources.connect("toggled", self._toggle_partition_sources)
+        selection_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        selection_controls.append(self.select_all)
+        selection_controls.append(self.show_partition_sources)
         self.dump_gpt = Gtk.CheckButton(label="Include GPT metadata when reading")
         self.dump_gpt.set_active(True)
-        box.append(self.select_all)
+        box.append(selection_controls)
         box.append(self.choose_folder_button)
 
         self.partition_list = Gtk.ListBox()
@@ -1643,22 +1754,26 @@ class MtkWindow(Adw.ApplicationWindow):
             _gpt_data, gpt = connected.daloader.get_gpt()
             if gpt is None:
                 raise RuntimeError("Device connected, but its GPT partition table could not be read.")
-            partitions = [
-                (entry.name, entry.sectors * gpt.sectorsize)
+            partitions = [(entry.name, entry.sectors * gpt.sectorsize)
+                          for entry in gpt.partentries]
+            geometry = {
+                entry.name: {"name": entry.name, "size": entry.sectors * gpt.sectorsize,
+                             "start": entry.sector * gpt.sectorsize,
+                             "parttype": getattr(entry, "parttype", "user") or "user"}
                 for entry in gpt.partentries
-            ]
+            }
 
             mode = ("Bootrom mode" if connected.config.is_brom else
                     "DA mode" if connected.config.chipconfig.damode else "Preloader mode")
             chipset = f"{connected.config.chipconfig.name} ({connected.config.chipconfig.description})"
-            GLib.idle_add(self._connected, chipset, mode, partitions)
+            GLib.idle_add(self._connected, chipset, mode, partitions, geometry)
             print(f"[mtkclient] Connected: {chipset} — {mode}", flush=True)
         except Exception as error:
             logging.exception("MTK device connection failed")
             print(f"[mtkclient] Connection failed: {error}", file=sys.stderr, flush=True)
             GLib.idle_add(self._connection_failed, str(error))
 
-    def _connected(self, chipset, mode, partitions):
+    def _connected(self, chipset, mode, partitions, geometry=None):
         self._stop_connection_status_rotation()
         self.device_connected = True
         self.brom_mode = mode == "Bootrom mode"
@@ -1689,6 +1804,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connected_mark.queue_draw()
         GLib.timeout_add(16, self._animate_connected_mark)
         self.partitions = partitions
+        self.partition_geometry = geometry or {}
         self._populate_partitions()
         self._selection_changed()
         self.operation_status.set_text(f"{len(partitions)} partitions available")
@@ -1698,6 +1814,13 @@ class MtkWindow(Adw.ApplicationWindow):
                        self.unlock_button, self.lock_button):
             button.set_sensitive(True)
         self.select_all.set_sensitive(bool(partitions))
+        self.show_partition_sources.set_sensitive(bool(partitions))
+        if self.identify_window:
+            self.identify_folder_button.set_sensitive(True)
+            for button in (self.identify_force_button, self.identify_scan_button,
+                           self.identify_verify_button):
+                button.set_sensitive(bool(self.identify_directory))
+            self.identify_diagnostic_button.set_sensitive(True)
         return GLib.SOURCE_REMOVE
 
     def _animate_connected_mark(self):
@@ -1773,6 +1896,8 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_rows.clear()
         self.partition_pin_status.clear()
         self.partition_images.clear()
+        self.partition_source_labels.clear()
+        self.partition_sources.clear()
         self.partition_image_status = {}
         for name, size in self.partitions:
             row = Adw.ActionRow(
@@ -1785,6 +1910,15 @@ class MtkWindow(Adw.ApplicationWindow):
             image_status.set_visible(False)
             row.add_suffix(image_status)
             self.partition_image_status[name] = image_status
+            source = Gtk.Label(label="No source found")
+            source.add_css_class("dimmed")
+            source.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            source.set_max_width_chars(28)
+            source.set_tooltip_text("Source image for this partition, if identified")
+            source.set_visible(self.show_partition_sources.get_active())
+            row.add_suffix(source)
+            self.partition_source_labels[name] = source
+            self.partition_sources[name] = "No source found"
             pin_status = Gtk.Image.new_from_icon_name("view-pin-symbolic")
             pin_status.set_tooltip_text("Pinned to top")
             pin_status.update_property([Gtk.AccessibleProperty.LABEL], ["Pinned to top"])
@@ -1866,6 +2000,12 @@ class MtkWindow(Adw.ApplicationWindow):
             )
             self.partition_stack.set_visible_child_name("empty")
         self.select_all.set_sensitive(self.device_connected and visible_count > 0)
+        self.show_partition_sources.set_sensitive(self.device_connected and visible_count > 0)
+
+    def _toggle_partition_sources(self, check):
+        visible = check.get_active()
+        for label in self.partition_source_labels.values():
+            label.set_visible(visible)
 
     @staticmethod
     def _format_size(size):
@@ -2282,12 +2422,12 @@ class MtkWindow(Adw.ApplicationWindow):
 
         def run():
             try:
-                callback(*args)
-                GLib.idle_add(self._operation_finished, title, None)
+                result = callback(*args)
+                GLib.idle_add(self._operation_finished, title, None, result)
             except BaseException as error:
                 logging.exception("%s failed", title)
                 print(f"[mtkclient] {title} failed: {error}", file=sys.stderr, flush=True)
-                GLib.idle_add(self._operation_finished, title, str(error))
+                GLib.idle_add(self._operation_finished, title, str(error), None)
 
         self.operation_thread = threading.Thread(target=run, name="mtk-operation", daemon=True)
         self.operation_thread.start()
@@ -2339,6 +2479,7 @@ class MtkWindow(Adw.ApplicationWindow):
             for check, _size in self.partition_checks.values():
                 check.set_sensitive(False)
             self.select_all.set_sensitive(False)
+            self.show_partition_sources.set_sensitive(False)
             for bar in bars:
                 bar.pulse()
                 bar.set_text("Starting…")
@@ -2355,7 +2496,22 @@ class MtkWindow(Adw.ApplicationWindow):
             for check, _size in self.partition_checks.values():
                 check.set_sensitive(self.device_connected)
             self.select_all.set_sensitive(self.device_connected and bool(self.partitions))
+            self.show_partition_sources.set_sensitive(self.device_connected and bool(self.partitions))
             self._selection_changed()
+        if hasattr(self, "identify_progress"):
+            identify_task = title in (
+                "Index firmware images", "Identify firmware",
+                "Verify firmware matches", "Read-only DA diagnostic",
+            )
+            show_progress = running and identify_task
+            self.identify_progress.set_visible(show_progress)
+            if show_progress:
+                self.identify_progress.set_fraction(0)
+                self.identify_progress.set_text("Starting…")
+                self.identify_progress.pulse()
+            elif not running:
+                self.identify_progress.set_fraction(0)
+                self.identify_progress.set_text("")
 
     def _pulse_progress(self):
         if not self.operation_thread or not self.operation_thread.is_alive():
@@ -2365,10 +2521,23 @@ class MtkWindow(Adw.ApplicationWindow):
         if not self.operation_has_progress:
             for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
                 bar.pulse()
+            if getattr(self, "identify_progress", None) and self.identify_progress.get_visible():
+                self.identify_progress.pulse()
         return GLib.SOURCE_CONTINUE
 
-    def _operation_finished(self, title, error):
+    def _operation_finished(self, title, error, result=None):
         self._set_operation_running(False)
+        if title in ("Index firmware images", "Identify firmware", "Verify firmware matches",
+                     "Read-only DA diagnostic"):
+            self.identify_cancel_button.set_sensitive(False)
+            self.identify_progress.set_visible(False)
+        if title == "Index firmware images":
+            # Ignore delayed progress idles once this operation has a terminal result.
+            self.identify_progress_complete = True
+            if error:
+                self.identify_count.set_text(f"Indexing failed: {error}")
+            else:
+                self._identify_indexed(result or 0)
         if error:
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title} failed. See Logs for details.")
@@ -2377,7 +2546,362 @@ class MtkWindow(Adw.ApplicationWindow):
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title} completed")
             self.toast_overlay.add_toast(Adw.Toast(title=f"{title} completed"))
+        if self.identify_pending_change and self.identify_directory:
+            self.identify_pending_change = False
+            GLib.timeout_add(100, self._reindex_after_change)
         return GLib.SOURCE_REMOVE
+
+    def _choose_identify_folder(self, *_args):
+        chooser = Gtk.FileChooserNative.new(
+            "Select firmware image folder", self.identify_window or self,
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            "_Select", "_Cancel",
+        )
+        chooser.connect("response", self._identify_folder_chosen)
+        chooser.show()
+
+    def _identify_folder_chosen(self, chooser, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            folder = chooser.get_file()
+            if folder:
+                self.identify_directory = folder.get_path()
+                self.identify_count.set_text(
+                    f"Searching folder tree for .img and .bin files…\n{self.identify_directory}"
+                )
+                self.identify_results.set_text("")
+                self._clear_partition_sources()
+                self._index_identify_folder(False)
+                # Start discovery before touching old monitor state. A watcher
+                # stack left by an earlier run can contain thousands of open
+                # iterators; it must never delay first visible scan progress.
+                GLib.idle_add(self._watch_identify_directory)
+        chooser.destroy()
+
+    def _index_identify_folder(self, force=False):
+        if not self.identify_directory:
+            return
+        if self.operation_busy:
+            self.identify_count.set_text("Waiting for the current device operation to finish before indexing.")
+            self.toast_overlay.add_toast(Adw.Toast(title="Another operation is still running"))
+            return
+        directory = self.identify_directory
+        cancel_token = threading.Event()
+        self.identify_cancel = cancel_token
+        self.identify_generation += 1
+        generation = self.identify_generation
+        self.identify_progress_complete = False
+        self.identify_cancel_button.set_sensitive(True)
+        self.identify_progress.set_visible(True)
+        self.identify_progress.set_fraction(0)
+        self.identify_progress.set_text("Starting recursive folder scan…")
+        self.identify_progress.pulse()
+        self.identify_count.set_text(f"Starting recursive scan under:\n{directory}")
+
+        def index_worker():
+            if self.identify_index is None:
+                self.identify_index = ImageIndex(APP_CONFIG_DIR / "firmware-images.sqlite3")
+            count = self.identify_index.index_directory(
+                directory, force=force,
+                cancel=cancel_token,
+                progress=lambda done, total, name: GLib.idle_add(
+                    self._set_identify_progress_text, generation,
+                    (f"Searching recursively… {total} eligible images found" if not total else
+                     f"Comparing image fingerprints…" if name.startswith("Comparing") else
+                     f"Indexed {done}/{total} images: {name}")),
+                byte_progress=lambda path, number, image_count, done, total: GLib.idle_add(
+                    self._update_identify_file_progress, path, number, image_count,
+                    done, total, directory, generation),
+                discovery_progress=lambda path, found, dirs: GLib.idle_add(
+                    self._update_identify_discovery, path, found, dirs, directory, generation),
+            )
+            return count
+
+        self._run_operation("Index firmware images", index_worker)
+
+    def _identify_indexed(self, count):
+        self.identify_progress_complete = True
+        self.identify_count.set_text(
+            f"{count} eligible images indexed recursively · {self.identify_directory}"
+            if count else f"No .img or .bin files found under {self.identify_directory}"
+        )
+        for button in (self.identify_force_button, self.identify_scan_button,
+                       self.identify_verify_button):
+            button.set_sensitive(bool(self.device_connected and count))
+        return GLib.SOURCE_REMOVE
+
+    def _set_identify_progress_text(self, generation, text):
+        if generation == self.identify_generation and not self.identify_progress_complete:
+            self.identify_count.set_text(text)
+        return GLib.SOURCE_REMOVE
+
+    def _update_identify_discovery(self, path, found, directories, root, generation):
+        if generation != self.identify_generation or self.identify_progress_complete:
+            return GLib.SOURCE_REMOVE
+        relative = os.path.relpath(path, root)
+        self.identify_count.set_text(
+            f"Scanning folders: {directories:,} visited · {found:,} image files found\n{relative}"
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _update_identify_file_progress(self, path, number, image_count, done, total,
+                                       root, generation):
+        if generation != self.identify_generation or self.identify_progress_complete:
+            return GLib.SOURCE_REMOVE
+        relative = os.path.relpath(path, root)
+        if total:
+            fraction = min(1.0, done / total)
+            self.identify_count.set_text(
+                f"Image {number} of {image_count} · {relative}\n"
+                f"{fraction:.0%} · {self._format_size(done)} of {self._format_size(total)}"
+            )
+            self.identify_progress.set_fraction(fraction)
+            self.identify_progress.set_text(f"{fraction:.0%} of current image")
+        else:
+            self.identify_count.set_text(f"Image {number} of {image_count} · {relative}")
+        return GLib.SOURCE_REMOVE
+
+    def _watch_identify_directory(self):
+        if self.identify_monitor_walk_source:
+            GLib.source_remove(self.identify_monitor_walk_source)
+            self.identify_monitor_walk_source = None
+        old_streams = self.identify_monitor_stack
+        self.identify_monitor_stack = []
+        old_monitors = self.identify_monitors
+        self.identify_monitors = []
+        if self.identify_poll_source:
+            GLib.source_remove(self.identify_poll_source)
+            self.identify_poll_source = None
+        if old_streams or old_monitors:
+            def dispose_old_watchers():
+                for stream in old_streams:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+                for monitor in old_monitors:
+                    try:
+                        monitor.cancel()
+                    except GLib.Error:
+                        pass
+            threading.Thread(
+                target=dispose_old_watchers, name="mtk-image-watch-cleanup", daemon=True
+            ).start()
+        if not self.identify_directory:
+            return GLib.SOURCE_REMOVE
+        try:
+            root = Path(self.identify_directory)
+            self._add_identify_directory_monitor(root)
+        except OSError as error:
+            logging.info("Unable to monitor image folder %s: %s", self.identify_directory, error)
+        self.identify_monitor = self.identify_monitors[0] if self.identify_monitors else None
+        # One watcher per folder is prohibitively expensive for firmware trees
+        # containing source checkouts. Watch the selected root, and periodically
+        # rescan metadata to catch changes in deeper descendants.
+        self.identify_poll_source = GLib.timeout_add_seconds(
+            120, self._periodic_identify_revalidation
+        )
+
+    def _add_identify_directory_monitor(self, path):
+        try:
+            monitor = Gio.File.new_for_path(str(path)).monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES, None
+            )
+            monitor.connect("changed", self._identify_files_changed)
+            self.identify_monitors.append(monitor)
+        except GLib.Error as error:
+            logging.info("Image folder monitoring unavailable for %s: %s", path, error)
+
+    def _periodic_identify_revalidation(self):
+        if not self.identify_directory:
+            self.identify_poll_source = None
+            return GLib.SOURCE_REMOVE
+        if self.operation_busy:
+            self.identify_pending_change = True
+        else:
+            self._index_identify_folder(False)
+        return GLib.SOURCE_CONTINUE
+
+    def _identify_files_changed(self, *_args):
+        self.identify_pending_change = True
+        if self.identify_debounce:
+            GLib.source_remove(self.identify_debounce)
+        self.identify_debounce = GLib.timeout_add(900, self._reindex_after_change)
+
+    def _reindex_after_change(self):
+        self.identify_debounce = None
+        if self.operation_busy:
+            self.identify_pending_change = True
+        elif self.identify_directory:
+            self.identify_pending_change = False
+            self._index_identify_folder(False)
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_identify(self, *_args):
+        if self.identify_cancel:
+            self.identify_cancel.set()
+            self.identify_count.set_text("Cancelling firmware scan…")
+
+    def _choose_diagnostic_image(self, *_args):
+        if not self.device_connected or self.operation_busy:
+            self.toast_overlay.add_toast(Adw.Toast(title="Connect a device and finish the current operation first"))
+            return
+        chooser = Gtk.FileChooserNative.new(
+            "Choose known local firmware image", self, Gtk.FileChooserAction.OPEN,
+            "_Select", "_Cancel",
+        )
+        chooser.connect("response", self._diagnostic_image_chosen)
+        chooser.show()
+
+    def _diagnostic_image_chosen(self, chooser, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            file = chooser.get_file()
+            if file:
+                self._choose_diagnostic_partition(file.get_path())
+        chooser.destroy()
+
+    def _choose_diagnostic_partition(self, image_path):
+        names = list(self.partition_geometry)
+        if not names:
+            self.toast_overlay.add_toast(Adw.Toast(title="No GPT partitions are accessible"))
+            return
+        dialog = Gtk.Dialog(
+            title="Read-only DA diagnostic", transient_for=self, modal=True,
+        )
+        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("_Run diagnostic", Gtk.ResponseType.ACCEPT)
+        dialog.set_default_size(420, 140)
+        content = dialog.get_content_area()
+        content.set_spacing(12)
+        content.set_margin_top(18)
+        content.set_margin_bottom(18)
+        content.set_margin_start(18)
+        content.set_margin_end(18)
+        description = Gtk.Label(
+            label="Select the partition that you know contains this image. The diagnostic only reads a few aligned samples.",
+            wrap=True, xalign=0,
+        )
+        content.append(description)
+        choices = [f"{name} · {self.partition_geometry[name]['size']:,} bytes"
+                   for name in names]
+        dropdown = Gtk.DropDown.new_from_strings(choices)
+        dropdown.set_selected(0)
+        content.append(dropdown)
+        dialog.connect("response", self._diagnostic_partition_chosen,
+                       image_path, names, dropdown)
+        dialog.present()
+
+    def _diagnostic_partition_chosen(self, dialog, response, image_path, names, dropdown):
+        dialog.destroy()
+        if response != Gtk.ResponseType.ACCEPT or not self.device_connected or self.operation_busy:
+            return
+        selected = dropdown.get_selected()
+        if selected >= len(names):
+            return
+        partition_name = names[selected]
+        backend = self.backend
+        geometry = dict(self.partition_geometry)
+        self.identify_cancel = threading.Event()
+        self.identify_cancel_button.set_sensitive(True)
+
+        def diagnostic_worker():
+            mtk = backend.mtk
+            report = diagnose_da_reads(
+                image_path, mtk.daloader, geometry, partition_name,
+                getattr(mtk.config, "pagesize", 512), cancel=self.identify_cancel,
+            )
+            GLib.idle_add(self._show_da_diagnostic, report)
+
+        self._run_operation("Read-only DA diagnostic", diagnostic_worker)
+
+    def _show_da_diagnostic(self, report):
+        usb = (f"{report.usb_read_calls} usbread calls / {report.usb_bytes_received:,} returned bytes"
+               if report.usb_read_calls is not None else "USB-layer counters unavailable")
+        latency = (f"mean read {sum(report.read_latencies) / len(report.read_latencies):.3f}s"
+                   if report.read_latencies else "no successful DA reads")
+        per_read = ", ".join(f"{value:.3f}s" for value in report.read_latencies) or "none"
+        details = (
+            f"{report.status}: {report.image} → {report.partition}\n"
+            f"Checks {report.matching_checks}/{report.checks}; DA calls {report.da_requests}, "
+            f"{report.da_bytes_requested:,} aligned bytes requested; {usb}; "
+            f"elapsed {report.elapsed_seconds:.3f}s ({latency}; per read {per_read}).\n"
+            f"Logical offsets: {report.logical_offsets}; device addresses: {report.device_addresses}.\n"
+            f"Exact offsets {'OK' if report.exact_offsets_ok else 'FAILED'}; alignment "
+            f"{'OK' if report.alignment_ok else 'FAILED'}; storage region "
+            f"{'OK' if report.storage_region_ok else 'FAILED'}; session "
+            f"{'stable' if report.session_stable else 'CHANGED'}."
+            + (f"\n{report.error}" if report.error else "")
+        )
+        self.identify_results.set_text(details)
+        self.append_log("Read-only DA diagnostic: " + details.replace("\n", " · "))
+        return GLib.SOURCE_REMOVE
+
+    def _scan_images(self, full):
+        if not self.device_connected or not self.identify_index or self.operation_busy:
+            return
+        directory = self.identify_directory
+        image_index = self.identify_index
+        partition_geometry = dict(self.partition_geometry)
+        cancel_token = threading.Event()
+        self.identify_cancel = cancel_token
+        self.identify_cancel_button.set_sensitive(True)
+
+        def scan_worker():
+            mtk = self.backend.mtk
+            daloader = mtk.daloader
+            # Direct random-access reads through the already-authenticated DA.
+            read_at = make_da_reader(
+                daloader, partition_geometry, getattr(mtk.config, "pagesize", 512),
+            )
+            results = identify_images(
+                image_index, list(partition_geometry.values()), read_at,
+                full=full,
+                directory=directory,
+                cancel=cancel_token,
+                progress=lambda name, count: GLib.idle_add(
+                    self.identify_count.set_text, f"Scanning {name} · {count} bytes read"),
+            )
+            GLib.idle_add(self._show_identify_results, results)
+
+        self._run_operation("Verify firmware matches" if full else "Identify firmware", scan_worker)
+
+    def _show_identify_results(self, results):
+        lines = []
+        for partition, matches, status, coverage in results:
+            if partition in self.partition_sources:
+                if len(matches) == 1 and status.startswith(("Likely match", "Verified")):
+                    source = matches[0][0]
+                elif len(matches) > 1:
+                    source = f"Ambiguous ({len(matches)} images)"
+                elif status.startswith("Unknown"):
+                    source = "Unknown"
+                else:
+                    source = "No match"
+                self.partition_sources[partition] = source
+                self.partition_source_labels[partition].set_text(source)
+                self.partition_source_labels[partition].set_tooltip_text(source)
+                self.partition_source_labels[partition].set_visible(
+                    self.show_partition_sources.get_active()
+                )
+            if matches:
+                names = ", ".join(f"{name} ({size:,} B)" for name, size in matches)
+            else:
+                names = "No matching image"
+            ambiguity = " · ambiguous; candidates indistinguishable" if len(matches) > 1 else ""
+            geometry = self.partition_geometry.get(partition, {})
+            prefix = (" · remaining partition tail unverified"
+                      if matches and any(size < geometry.get("size", size) for _name, size in matches)
+                      else "")
+            lines.append(f"{partition}: {names}\n  {status} · {coverage}{ambiguity}{prefix}")
+        if self.partition_geometry:
+            lines.append("Logical partitions inside super are not scanned unless the active DA exposes a reliable mapping.")
+        self.identify_results.set_text("\n\n".join(lines) if lines else "No accessible partitions.")
+        return GLib.SOURCE_REMOVE
+
+    def _clear_partition_sources(self):
+        for partition, label in self.partition_source_labels.items():
+            self.partition_sources[partition] = "No source found"
+            label.set_text("No source found")
+            label.set_tooltip_text("Source image for this partition, if identified")
 
     def _read_partitions(self, selected, folder, include_gpt=True):
         handler = self.backend
