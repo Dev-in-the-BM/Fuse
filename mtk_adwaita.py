@@ -1932,8 +1932,12 @@ class MtkWindow(Adw.ApplicationWindow):
             self.partition_image_status[name] = image_status
             source = Gtk.Label(label="No source found")
             source.add_css_class("dimmed")
-            source.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-            source.set_max_width_chars(28)
+            source.set_halign(Gtk.Align.FILL)
+            source.set_hexpand(True)
+            source.set_xalign(0.5)
+            source.set_justify(Gtk.Justification.CENTER)
+            source.set_wrap(True)
+            source.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             source.set_tooltip_text("Source image for this partition, if identified")
             source.set_visible(self.show_partition_sources.get_active())
             row.add_suffix(source)
@@ -2967,7 +2971,9 @@ class MtkWindow(Adw.ApplicationWindow):
         for partition, matches, status, coverage in results:
             if partition in self.partition_sources:
                 if len(matches) == 1 and status.startswith(("Likely match", "Verified")):
-                    source = matches[0][0]
+                    source = os.path.realpath(os.path.join(
+                        self.identify_directory, matches[0][0]
+                    ))
                 elif len(matches) > 1:
                     source = f"Ambiguous ({len(matches)} images)"
                 elif status.startswith("Unknown"):
