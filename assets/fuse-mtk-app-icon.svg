@@ -19,8 +19,8 @@
 
   <!-- Drawn behind the phone, with no visible port, plug, or loose connector. -->
   <g id="usb-cable" fill="none" stroke-linecap="round">
-    <path d="M60 110v6a6 6 0 0 0 6 6h48" stroke="#5e5c64" stroke-width="6"/>
-    <path d="M60 110v6a6 6 0 0 0 6 6h48" stroke="#c0bfbc" stroke-width="2.5"/>
+    <path d="M60 110v6c0 4 2 6 6 6c10 0 14-6 24-6" stroke="#5e5c64" stroke-width="4"/>
+    <path d="M60 110v6c0 4 2 6 6 6c10 0 14-6 24-6" stroke="#c0bfbc" stroke-width="2"/>
   </g>
 
   <g id="handset">
