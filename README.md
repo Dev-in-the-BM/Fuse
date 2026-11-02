@@ -1,4 +1,4 @@
-# <img src="assets/fuse-mtk-app-icon-128.png" width="64" alt=""> Fuse
+# <img src="assets/fuse-mtk-app-icon.svg" width="64" alt=""> Fuse
 
 A modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4, and libadwaita.
 
