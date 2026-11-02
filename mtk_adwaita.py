@@ -65,7 +65,10 @@ class BackendProgress:
         self.window = window
 
     def emit(self, position):
-        GLib.idle_add(self.window._update_operation_progress, position)
+        GLib.idle_add(
+            self.window._update_operation_progress,
+            self.window.operation_progress_offset + position,
+        )
 
 
 class MtkWindow(Adw.ApplicationWindow):
@@ -89,6 +92,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_started_at = None
         self.operation_total = None
         self.operation_progress_position = 0
+        self.operation_progress_offset = 0
         self.operation_has_progress = False
         self.connected_mark_started_at = None
         self.connection_success_timeout = None
@@ -2253,7 +2257,7 @@ class MtkWindow(Adw.ApplicationWindow):
                 include_gpt = self.dump_gpt.get_active()
                 self._run_operation("Read partitions", self._read_partitions,
                                     selected, folder, include_gpt,
-                                    total=selected[0][1] if len(selected) == 1 else None)
+                                    total=sum(size for _name, size in selected))
             else:
                 # Match every GPT partition against files anywhere under the
                 # chosen folder. Prefer .bin when both formats are present;
@@ -2459,6 +2463,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_started_at = time.monotonic()
         self.operation_total = total
         self.operation_progress_position = 0
+        self.operation_progress_offset = 0
         self.operation_has_progress = False
 
         def run():
@@ -3035,12 +3040,14 @@ class MtkWindow(Adw.ApplicationWindow):
     def _read_partitions(self, selected, folder, include_gpt=True):
         handler = self.backend
         handler.close = lambda: None
+        self.operation_progress_offset = 0
         for name, _size in selected:
             filename = os.path.join(folder, f"{name}.bin")
             GLib.idle_add(self.append_log, f"Reading {name} to {filename}")
             args = SimpleNamespace(partitionname=name, filename=filename,
                                    parttype=None, offset=None, length=None)
             handler.handle_da_cmds(handler.mtk, "r", args)
+            self.operation_progress_offset += _size
         if include_gpt:
             GLib.idle_add(self.append_log, f"Saving GPT metadata to {folder}")
             handler.handle_da_cmds(
