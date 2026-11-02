@@ -49,3 +49,13 @@ python3 install-desktop-entry.py
 
 The entry appears as **Fuse** in the GNOME app grid. The installer registers Fuse's app icon at multiple hicolor sizes and as a scalable SVG, for the launcher and dock; the same mark is shown in **About Fuse**. `run.sh` activates this project's `.venv` when present, then uses `uv run` against the selected backend checkout. It explicitly reads PyGObject from `/usr/bin/python3`, since GTK bindings are installed by the operating system, not from PyPI. Install `python3-gi`, `gir1.2-gtk-4.0`, and `gir1.2-adw-1` from your distribution packages if needed. For terminal output while developing, launch with `./run.sh` rather than invoking `uv run` directly; direct invocation does not configure the distro GI module path.
 
+## Debian package
+
+Build a native `.deb` from the repository root on Debian or Ubuntu after installing `build-essential` and `debhelper`:
+
+```sh
+dpkg-buildpackage -us -uc -b
+sudo apt install ../quest.devinthebm.fuse_*.deb
+```
+
+The package installs Fuse, its desktop entry and icons, and the USB udev rule. It depends on the system GTK/Python runtime and the tools required for the optional per-user backend installer; it does not bundle MTK Client. Backend installation still happens from Preferences and requires an internet connection. Reconnect the device after installing the package so udev can apply the rule.

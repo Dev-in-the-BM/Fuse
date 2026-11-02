@@ -8,9 +8,9 @@ import shutil
 app_dir = Path(__file__).resolve().parent
 desktop_dir = Path.home() / ".local/share/applications"
 desktop_dir.mkdir(parents=True, exist_ok=True)
-desktop_file = desktop_dir / "io.github.mtkclient.Adwaita.desktop"
+app_id = "quest.devinthebm.fuse"
+desktop_file = desktop_dir / f"{app_id}.desktop"
 launcher = str(app_dir / "run.sh")
-app_id = "io.github.mtkclient.Adwaita"
 
 # Install standard hicolor sizes so the shell, app grid, and other launchers
 # can select the best raster for their display scale. Keep the SVG as the
@@ -47,7 +47,7 @@ desktop_file.write_text(
     "Terminal=false\n"
     "Categories=Utility;\n"
     "StartupNotify=true\n"
-    "StartupWMClass=io.github.mtkclient.Adwaita\n"
+    f"StartupWMClass={app_id}\n"
     "",
     encoding="utf-8",
 )

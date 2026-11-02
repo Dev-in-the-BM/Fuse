@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Fuse
+GenericName=MTK Client
+Comment=Fuse, a GNOME-native MTK Client for MediaTek devices
+Keywords=MTK Client;MTK;MediaTek;Fuse;
+Exec=fuse
+Icon=quest.devinthebm.fuse
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=quest.devinthebm.fuse

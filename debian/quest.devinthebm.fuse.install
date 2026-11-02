@@ -1,0 +1,9 @@
+app_settings.py usr/lib/fuse
+backend_manager.py usr/lib/fuse
+mtk_adwaita.py usr/lib/fuse
+mtk_image_identify.py usr/lib/fuse
+sitecustomize.py usr/lib/fuse
+assets usr/lib/fuse
+debian/fuse usr/bin
+debian/quest.devinthebm.fuse.desktop usr/share/applications
+assets/52-mtkclient.rules lib/udev/rules.d

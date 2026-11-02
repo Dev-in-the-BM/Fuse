@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_install:
+	dh_install --sourcedir=.
+	for size in 16 24 32 48 64 96 128 192 256 384 512; do \
+		install -D -m 644 assets/fuse-mtk-app-icon-$$size.png \
+			debian/quest.devinthebm.fuse/usr/share/icons/hicolor/$${size}x$${size}/apps/quest.devinthebm.fuse.png; \
+	done
+	install -D -m 644 assets/fuse-mtk-app-icon.svg \
+		debian/quest.devinthebm.fuse/usr/share/icons/hicolor/scalable/apps/quest.devinthebm.fuse.svg

@@ -1,0 +1,12 @@
+quest.devinthebm.fuse (0.1.1-1) unstable; urgency=medium
+
+  * Keep the main menu available on the disconnected device screen.
+  * Name the backend and application settings action Preferences.
+
+ -- Dev in the BM <devinthebm@outlook.com>  Mon, 02 Nov 2026 19:01:40 +0000
+
+quest.devinthebm.fuse (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian package for Fuse.
+
+ -- Dev in the BM <devinthebm@outlook.com>  Mon, 02 Nov 2026 18:43:22 +0000

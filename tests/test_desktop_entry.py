@@ -8,7 +8,7 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parents[1]
 INSTALLER = APP_DIR / "install-desktop-entry.py"
-APP_ID = "io.github.mtkclient.Adwaita"
+APP_ID = "quest.devinthebm.fuse"
 ICON_SIZES = (16, 24, 32, 48, 64, 96, 128, 256, 512)
 
 

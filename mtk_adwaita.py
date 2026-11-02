@@ -30,7 +30,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 
-APP_ID = "io.github.mtkclient.Adwaita"
+APP_ID = "quest.devinthebm.fuse"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_LOG_CHARS = 200_000
 _saved_backend_dir = get_backend_dir()
@@ -1225,7 +1225,7 @@ class MtkWindow(Adw.ApplicationWindow):
         menu.append("Connect", "win.show-connect")
         menu.append("Firmware image matching", "win.show-identify")
         menu.append("Logs", "win.show-logs")
-        menu.append("Settings", "win.show-settings")
+        menu.append("Preferences", "win.show-settings")
         menu.append("About Fuse", "win.show-about")
         actions = Gio.SimpleActionGroup()
         for name, callback in (
@@ -1390,7 +1390,11 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_verify_button.set_size_request(-1, 48)
             self.identify_verify_button.connect("clicked", lambda *_: self._scan_images(True))
             self.identify_cancel_button = Gtk.Button(label="Cancel")
-            self.identify_cancel_button.set_icon_name("process-stop-symbolic")
+            self.identify_cancel_button.set_child(self._identify_action_content(
+                "Cancel", "window-close-symbolic"
+            ))
+            self.identify_cancel_button.add_css_class("pill")
+            self.identify_cancel_button.set_size_request(160, 44)
             self.identify_cancel_button.connect("clicked", self._cancel_identify)
             actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             actions.set_hexpand(True)
@@ -1695,7 +1699,9 @@ class MtkWindow(Adw.ApplicationWindow):
         # client-side decorations and draggable title area remain available.
         self.header.set_visible(True)
         self.switcher.set_visible(connected)
-        self.navigation_button.set_visible(connected)
+        # Preferences must remain reachable before a device connects (for
+        # example, to install or select the MTK Client backend).
+        self.navigation_button.set_visible(True)
         self.reboot_button.set_visible(connected)
         if not connected:
             self.stack.set_visible_child_name("device")

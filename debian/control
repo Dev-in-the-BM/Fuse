@@ -1,0 +1,27 @@
+Source: quest.devinthebm.fuse
+Section: utils
+Priority: optional
+Maintainer: Dev in the BM <devinthebm@outlook.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/Dev-in-the-BM/Fuse
+
+Package: quest.devinthebm.fuse
+Architecture: all
+Depends:
+ ${misc:Depends},
+ git,
+ gir1.2-adw-1,
+ gir1.2-gtk-4.0,
+ python3,
+ python3-cairo,
+ python3-gi,
+ python3-gi-cairo,
+ python3-pip,
+ python3-venv
+Description: GNOME-native MediaTek device client
+ Fuse is a GTK 4 and libadwaita frontend for MTK Client. It can read, write,
+ and erase device partitions, identify firmware image sources, and perform
+ other MediaTek device operations. The MTK Client backend is installed
+ separately by the user from the application preferences.
