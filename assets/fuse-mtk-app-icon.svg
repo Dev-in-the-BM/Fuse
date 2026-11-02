@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Fuse</title>
+  <desc id="desc">A charcoal-black keypad phone connected by USB, with navigation controls and physical keys aligned in three columns. Its black display shows a pixelated green firmware download arrow and a partially filled, square-edged progress bar.</desc>
+  <defs>
+    <!-- The broad face is flat. Shading is confined to the curved sides. -->
+    <linearGradient id="case-sides" gradientUnits="userSpaceOnUse" x1="33" y1="0" x2="87" y2="0" color-interpolation="linearRGB">
+      <stop offset="0" stop-color="#202020"/>
+      <stop offset="0.09" stop-color="#303030"/>
+      <stop offset="0.91" stop-color="#303030"/>
+      <stop offset="1" stop-color="#202020"/>
+    </linearGradient>
+    <path id="case-shape" d="M43 8h34c5.523 0 10 4.477 10 10v77c0 11-4 18-14 18H47c-10 0-14-7-14-18V18c0-5.523 4.477-10 10-10Z"/>
+    <g id="key-row">
+      <rect x="38" width="12" height="4" rx="1.5"/>
+      <rect x="54" width="12" height="4" rx="1.5"/>
+      <rect x="70" width="12" height="4" rx="1.5"/>
+    </g>
+  </defs>
+
+  <!-- Drawn behind the phone, with no visible port, plug, or loose connector. -->
+  <g id="usb-cable" fill="none" stroke-linecap="round">
+    <path d="M60 110v6a6 6 0 0 0 6 6h48" stroke="#5e5c64" stroke-width="6"/>
+    <path d="M60 110v6a6 6 0 0 0 6 6h48" stroke="#c0bfbc" stroke-width="2.5"/>
+  </g>
+
+  <g id="handset">
+    <!-- A three-pixel front profile and a gently rounded lower silhouette. -->
+    <use href="#case-shape" transform="translate(0 3)" fill="#181818"/>
+    <use href="#case-shape" fill="url(#case-sides)"/>
+    <rect id="earpiece" x="52" y="11" width="16" height="2" rx="1" fill="#77767b"/>
+
+    <!-- Four-pixel casing rim, without a second stacked display bezel. -->
+    <rect id="display" x="37" y="16" width="46" height="50" rx="3" fill="#000000"/>
+    <g id="download-mode">
+      <!-- Two-pixel display grid; the handset itself stays smoothly rounded. -->
+      <path d="M56 24h8v16h8v2h-2v2h-2v2h-2v2h-2v2h-2v2h-4v-2h-2v-2h-2v-2h-2v-2h-2v-2h-2v-2h8Z" fill="#33d17a"/>
+      <rect x="44" y="56" width="32" height="4" fill="#1c432e"/>
+      <rect x="44" y="56" width="20" height="4" fill="#33d17a"/>
+    </g>
+
+    <!-- All controls share the keypad's x=38,54,70 columns and 12px width. -->
+    <g id="navigation">
+      <rect x="54" y="71" width="12" height="12" rx="3" fill="#3d3846"/>
+      <rect x="54" y="70" width="12" height="12" rx="3" fill="#5e5c64"/>
+      <rect x="57" y="73" width="6" height="6" rx="1.5" fill="#deddda"/>
+      <rect x="38" y="73" width="12" height="6" rx="2" fill="#5e5c64"/>
+      <rect x="41" y="75" width="6" height="2" rx="1" fill="#33d17a"/>
+      <rect x="70" y="73" width="12" height="6" rx="2" fill="#5e5c64"/>
+      <rect x="73" y="75" width="6" height="2" rx="1" fill="#f66151"/>
+    </g>
+
+    <g id="keypad-lower-edges" fill="#3d3846">
+      <use href="#key-row" y="85"/>
+      <use href="#key-row" y="91"/>
+      <use href="#key-row" y="97"/>
+      <use href="#key-row" y="103"/>
+    </g>
+    <g id="numeric-keypad" fill="#5e5c64">
+      <use href="#key-row" y="84"/>
+      <use href="#key-row" y="90"/>
+      <use href="#key-row" y="96"/>
+      <use href="#key-row" y="102"/>
+    </g>
+  </g>
+</svg>

@@ -1262,6 +1262,13 @@ class MtkWindow(Adw.ApplicationWindow):
         content.set_margin_start(24)
         content.set_margin_end(24)
 
+        logo = Gtk.Image.new_from_file(
+            os.path.join(APP_DIR, "assets", "fuse-mtk-app-icon-128.png")
+        )
+        logo.set_pixel_size(96)
+        logo.set_halign(Gtk.Align.CENTER)
+        content.append(logo)
+
         title = Gtk.Label(label="Fuse", xalign=0)
         title.add_css_class("title-1")
         content.append(title)
