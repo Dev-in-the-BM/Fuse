@@ -1922,7 +1922,7 @@ class MtkWindow(Adw.ApplicationWindow):
         for name, size in self.partitions:
             row = Adw.ActionRow(
                 title=name,
-                subtitle=f"{self._format_size(size)} · Drop an image or choose one"
+                subtitle=self._format_size(size)
             )
             image_status = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
             image_status.set_tooltip_text("An image is assigned to this partition")
