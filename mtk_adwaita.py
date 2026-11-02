@@ -79,6 +79,8 @@ class MtkWindow(Adw.ApplicationWindow):
         self.connection_status_phrases = ()
         self.connection_status_phrase_index = 0
         self.operation_thread = None
+        self.operation_title = None
+        self.pending_device_operations = []
         self.reboot_thread = None
         self.device_connected = False
         self.brom_mode = False
@@ -2127,12 +2129,19 @@ class MtkWindow(Adw.ApplicationWindow):
         count = len(self._selected_partitions())
         self._refresh_partition_view()
         self.selection_count.set_text(f"{count} selected")
-        enabled = self.device_connected and count > 0 and not self.operation_busy
+        identification_running = self.operation_title in (
+            "Identify firmware", "Verify firmware matches",
+        )
+        enabled = self.device_connected and count > 0 and (
+            not self.operation_busy or identification_running
+        )
         self.read_button.set_sensitive(enabled)
         self.choose_folder_button.set_sensitive(
-            self.device_connected and not self.operation_busy
+            self.device_connected and (not self.operation_busy or identification_running)
         )
-        self.write_button.set_sensitive(self.device_connected and not self.operation_busy and count > 0)
+        self.write_button.set_sensitive(self.device_connected and count > 0 and (
+            not self.operation_busy or identification_running
+        ))
         self.erase_button.set_sensitive(enabled)
 
     def _choose_directory(self, operation):
@@ -2436,8 +2445,16 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _run_operation(self, title, callback, *args, total=None):
         if self.operation_thread and self.operation_thread.is_alive():
+            if (self.operation_title in ("Identify firmware", "Verify firmware matches")
+                    and title in ("Read partitions", "Write partitions")):
+                self.pending_device_operations.append((title, callback, args, total))
+                self.toast_overlay.add_toast(Adw.Toast(
+                    title=f"{title} queued until partition identification finishes"
+                ))
+                return
             self.toast_overlay.add_toast(Adw.Toast(title="Another device operation is running"))
             return
+        self.operation_title = title
         self._set_operation_running(True, title)
         self.operation_started_at = time.monotonic()
         self.operation_total = total
@@ -2509,6 +2526,8 @@ class MtkWindow(Adw.ApplicationWindow):
                 bar.set_text("Starting…")
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title}… See Logs for details.")
+            if title in ("Identify firmware", "Verify firmware matches"):
+                self._selection_changed()
             GLib.timeout_add(120, self._pulse_progress)
         else:
             for bar in bars:
@@ -2563,6 +2582,7 @@ class MtkWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_CONTINUE
 
     def _operation_finished(self, title, error, result=None):
+        self.operation_title = None
         self._set_operation_running(False)
         if title in ("Index firmware images", "Identify firmware", "Verify firmware matches",
                      "Read-only DA diagnostic"):
@@ -2586,6 +2606,11 @@ class MtkWindow(Adw.ApplicationWindow):
         if self.identify_pending_change and self.identify_directory:
             self.identify_pending_change = False
             GLib.timeout_add(100, self._reindex_after_change)
+        if self.pending_device_operations:
+            queued_title, callback, args, total = self.pending_device_operations.pop(0)
+            GLib.idle_add(
+                lambda: self._run_operation(queued_title, callback, *args, total=total)
+            )
         return GLib.SOURCE_REMOVE
 
     def _choose_identify_folder(self, *_args):
