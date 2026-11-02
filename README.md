@@ -1,15 +1,13 @@
 # Fuse
-An independent GNOME-native MTK client frontend built with Python, PyGObject, GTK 4, and libadwaita. The existing Qt GUI and backend under `../mtkclient/` are intentionally untouched.
+An modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4, and libadwaita.
 
 ## Features
 
-- Read, write, and erase GPT partitions. Search, sort, and pin partitions.
-- Find firmware image sources: choose a folder of candidate images. Fuse compares their fingerprints with device partitions and shows which image likely produced each partition. Full verification is also available.
-- Read and write whole-device storage.
+- Read, write, and delete GPT partitions. Search, sort, and pin partitions.
+- Find firmware image sources: Not sure which IMG is on each partition?
+  Choose a folder containting possible images. Fuse compares their fingerprints with device partitions and shows which image likely produced each partition. Full verification is also available.
 - Generate device keys and lock or unlock the bootloader.
-- Use an existing MTK Client installation to save storage, or download and install the backend with one click.
-
-Device operations run through the MTK Client backend. Destructive actions require confirmation. Hardware behavior has not yet been validated end-to-end; test on a supported device before relying on these operations.
+- Use an existing MTK Client installation as its backend to save storage, or download and install the backend with one click.
 
 ## Screenshots
 
