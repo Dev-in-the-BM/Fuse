@@ -1,0 +1,5 @@
+# Grant the active local user access to supported MediaTek/Android USB devices.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1004", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="22d9", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0fce", TAG+="uaccess"

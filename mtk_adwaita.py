@@ -4,6 +4,7 @@
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -16,6 +17,8 @@ from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
                           get_pinned_partitions, set_advanced_logging,
                           set_backend_dir, set_firmware_image_directory,
                           set_pinned_partitions)
+from backend_manager import (default_backend_dir, install_backend,
+                             is_backend_checkout, setup_usb_permissions)
 from mtk_image_identify import (ImageIndex, identify as identify_images,
                                 make_da_reader)
 
@@ -29,9 +32,14 @@ from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 APP_ID = "io.github.mtkclient.Adwaita"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_LOG_CHARS = 200_000
+_saved_backend_dir = get_backend_dir()
+_backend_candidates = (_saved_backend_dir, default_backend_dir(),
+                       os.path.join(APP_DIR, "mtkclient"),
+                       os.path.join(APP_DIR, "..", "mtkclient"))
 MTKCLIENT_DIR = os.environ.get(
     "MTKCLIENT_DIR",
-    get_backend_dir(os.path.join(APP_DIR, "..", "mtkclient")),
+    next((os.path.realpath(path) for path in _backend_candidates
+          if path and is_backend_checkout(path)), str(default_backend_dir())),
 )
 
 
@@ -797,15 +805,42 @@ class MtkWindow(Adw.ApplicationWindow):
         page = Adw.PreferencesPage(title="General", icon_name="emblem-system-symbolic")
         group = Adw.PreferencesGroup(
             title="MTK Client backend",
-            description="Choose the source checkout used to run device operations.",
+            description="Choose an existing MTK Client installation to use as the backend, or download and install one for this user.",
         )
-        row = Adw.ActionRow(title="Checkout location", subtitle=MTKCLIENT_DIR)
+        row = Adw.ActionRow(
+            title="Backend location",
+            subtitle="Existing MTK Client installation used for device operations: " + MTKCLIENT_DIR,
+        )
         choose_button = Gtk.Button(label="Choose…")
         choose_button.set_valign(Gtk.Align.CENTER)
         choose_button.connect("clicked", self._choose_backend_dir)
         row.add_suffix(choose_button)
         group.add(row)
+        self.backend_install_row = Adw.ActionRow(
+            title="Install MTK Client",
+            subtitle="Download and install MTK Client and its dependancies.",
+        )
+        self.backend_install_button = Gtk.Button(label="Download and Install")
+        self.backend_install_button.set_valign(Gtk.Align.CENTER)
+        self.backend_install_button.connect("clicked", self._install_backend)
+        self.backend_install_row.add_suffix(self.backend_install_button)
+        group.add(self.backend_install_row)
         page.add(group)
+        usb_group = Adw.PreferencesGroup(
+            title="USB device access",
+            description="Allows the active local user to access supported MediaTek USB devices. This changes a system udev rule and requires administrator authorization.",
+        )
+        usb_row = Adw.ActionRow(
+            title="Set up USB permissions",
+            subtitle="Uses a system authorization prompt when PolicyKit is available.",
+        )
+        usb_button = Gtk.Button(label="Set Up…")
+        usb_button.set_valign(Gtk.Align.CENTER)
+        usb_button.connect("clicked", self._setup_usb_permissions)
+        self.usb_permissions_button = usb_button
+        usb_row.add_suffix(usb_button)
+        usb_group.add(usb_row)
+        page.add(usb_group)
         logging_group = Adw.PreferencesGroup(
             title="Diagnostics",
             description="Advanced logging includes low-level USB packet details and may be verbose. Changes apply after restarting the app.",
@@ -827,6 +862,169 @@ class MtkWindow(Adw.ApplicationWindow):
         self.preferences_window = window
         self.backend_path_row = row
         window.present()
+
+    def _setup_usb_permissions(self, *_args):
+        if not all(shutil.which(tool) for tool in ("pkexec", "install", "udevadm")):
+            dialog = Adw.AlertDialog(
+                heading="Manual USB permission setup",
+                body=(
+                    "This system does not provide the PolicyKit tools needed for automatic setup. "
+                    "In a terminal, run:\n\n"
+                    f"sudo install -m 644 {os.path.join(APP_DIR, 'assets/52-mtkclient.rules')} "
+                    "/etc/udev/rules.d/52-mtkclient.rules\n"
+                    "sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb\n\n"
+                    "Then reconnect your device."
+                ),
+            )
+            dialog.add_response("close", "Close")
+            dialog.present(self.preferences_window)
+            return
+        body = (
+            "This installs a udev rule for MediaTek and common Android USB vendor IDs, "
+            "granting access to the active local desktop user (not every user). "
+            "Your system will ask you to authorize the change. Reconnect the device afterward."
+        )
+        dialog = Adw.AlertDialog(heading="Set up USB device access?", body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("setup", "Set Up")
+        dialog.set_default_response("setup")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._usb_permissions_confirmed)
+        dialog.present(self.preferences_window)
+
+    def _usb_permissions_confirmed(self, _dialog, response):
+        if response != "setup":
+            return
+        self.usb_permissions_button.set_sensitive(False)
+        self.usb_permissions_button.set_label("Setting Up…")
+        threading.Thread(target=self._usb_permissions_worker, daemon=True).start()
+
+    def _usb_permissions_worker(self):
+        try:
+            setup_usb_permissions()
+            GLib.idle_add(self._usb_permissions_finished, None)
+        except Exception as error:
+            GLib.idle_add(self._usb_permissions_finished, str(error))
+
+    def _usb_permissions_finished(self, error):
+        self.usb_permissions_button.set_sensitive(True)
+        self.usb_permissions_button.set_label("Set Up…")
+        if error:
+            self.toast_overlay.add_toast(Adw.Toast(
+                title=f"Could not set up USB permissions: {error}"
+            ))
+        else:
+            self.toast_overlay.add_toast(Adw.Toast(
+                title="USB access configured. Reconnect your device."
+            ))
+        return GLib.SOURCE_REMOVE
+
+    def _install_backend(self, *_args):
+        window = Gtk.Window(
+            title="Install MTK Client",
+            transient_for=self.preferences_window,
+            modal=True,
+            default_width=520,
+            default_height=380,
+            resizable=True,
+        )
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        outer.set_margin_top(18)
+        outer.set_margin_bottom(18)
+        outer.set_margin_start(18)
+        outer.set_margin_end(18)
+        outer.append(Gtk.Label(
+            label="Download and install MTK Client and its dependancies?",
+            wrap=True,
+            xalign=0,
+        ))
+        status = Gtk.Label(label="Ready to install", xalign=0)
+        outer.append(status)
+        progress = Gtk.ProgressBar(show_text=False)
+        outer.append(progress)
+        outer.append(Gtk.Label(label="Live log", xalign=0))
+        log_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.NONE)
+        log_view.add_css_class("card")
+        log_scroll = Gtk.ScrolledWindow(vexpand=True, min_content_height=150)
+        log_scroll.set_child(log_view)
+        outer.append(log_scroll)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
+                          halign=Gtk.Align.END)
+        cancel_button = Gtk.Button(label="Cancel")
+        install_button = Gtk.Button(label="Download and Install")
+        install_button.add_css_class("suggested-action")
+        buttons.append(cancel_button)
+        buttons.append(install_button)
+        outer.append(buttons)
+        window.set_child(outer)
+        self.backend_install_dialog = window
+        self.backend_install_status = status
+        self.backend_install_progress = progress
+        self.backend_install_log = log_view.get_buffer()
+        self.backend_install_cancel = cancel_button
+        cancel_button.connect("clicked", lambda *_: window.close())
+        install_button.connect("clicked", self._start_backend_install)
+        window.present()
+
+    def _start_backend_install(self, button):
+        button.set_sensitive(False)
+        self.backend_install_cancel.set_sensitive(False)
+        self.backend_install_status.set_text("Starting download…")
+        self.backend_install_progress.pulse()
+        self.backend_install_pulse_id = GLib.timeout_add(
+            120, self._backend_install_pulse
+        )
+        self.backend_install_dialog.connect("close-request", self._backend_install_close_request)
+        threading.Thread(target=self._install_backend_worker, daemon=True).start()
+
+    def _backend_install_close_request(self, *_args):
+        # The installer cannot safely be interrupted mid-package operation.
+        if not self.backend_install_cancel.get_sensitive():
+            return True
+        return False
+
+    def _install_backend_worker(self):
+        try:
+            path = install_backend(
+                progress=lambda text: GLib.idle_add(self._backend_install_set_status, text),
+                log=lambda text: GLib.idle_add(self._backend_install_append_log, text),
+            )
+            set_backend_dir(path)
+            GLib.idle_add(self._backend_install_finished, path, None)
+        except Exception as error:
+            GLib.idle_add(self._backend_install_finished, None, str(error))
+
+    def _backend_install_set_status(self, text):
+        self.backend_install_status.set_text(text)
+        return GLib.SOURCE_REMOVE
+
+    def _backend_install_pulse(self):
+        self.backend_install_progress.pulse()
+        return GLib.SOURCE_CONTINUE
+
+    def _backend_install_append_log(self, text):
+        end = self.backend_install_log.get_end_iter()
+        self.backend_install_log.insert(end, text + "\n")
+        return GLib.SOURCE_REMOVE
+
+    def _backend_install_finished(self, path, error):
+        if self.backend_install_pulse_id:
+            GLib.source_remove(self.backend_install_pulse_id)
+            self.backend_install_pulse_id = None
+        if error:
+            self.backend_install_status.set_text("Installation failed")
+            self._backend_install_append_log(error)
+            self.backend_install_cancel.set_label("Close")
+            self.backend_install_cancel.set_sensitive(True)
+            self.toast_overlay.add_toast(Adw.Toast(title=f"Backend installation failed: {error}"))
+        else:
+            self.backend_path_row.set_subtitle(path)
+            self.backend_install_status.set_text("Installation complete")
+            self.backend_install_progress.set_fraction(1.0)
+            self.backend_install_cancel.set_label("Close")
+            self.backend_install_cancel.set_sensitive(True)
+            self.toast_overlay.add_toast(Adw.Toast(title="MTK Client backend installed. Restart the app to use it."))
+        return GLib.SOURCE_REMOVE
 
     def _advanced_logging_changed(self, switch, _param):
         try:
@@ -1027,12 +1225,14 @@ class MtkWindow(Adw.ApplicationWindow):
         menu.append("Firmware image matching", "win.show-identify")
         menu.append("Logs", "win.show-logs")
         menu.append("Settings", "win.show-settings")
+        menu.append("About Fuse", "win.show-about")
         actions = Gio.SimpleActionGroup()
         for name, callback in (
             ("show-connect", lambda *_: self.show_page("device")),
             ("show-identify", self._open_image_matching),
             ("show-logs", lambda *_: self.show_page("logs")),
             ("show-settings", self.open_preferences),
+            ("show-about", self.open_about),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -1040,6 +1240,104 @@ class MtkWindow(Adw.ApplicationWindow):
         self.insert_action_group("win", actions)
         button.set_menu_model(menu)
         return button
+
+    def open_about(self, *_args):
+        """Show Fuse's purpose, project links, and upstream acknowledgements."""
+        if getattr(self, "about_window", None):
+            self.about_window.present()
+            return
+
+        window = Adw.Window(
+            transient_for=self, modal=True, title="About Fuse",
+            default_width=520, default_height=640,
+        )
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        toolbar.add_top_bar(header)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        content.set_margin_top(24)
+        content.set_margin_bottom(24)
+        content.set_margin_start(24)
+        content.set_margin_end(24)
+
+        title = Gtk.Label(label="Fuse", xalign=0)
+        title.add_css_class("title-1")
+        content.append(title)
+        description = Gtk.Label(
+            label="A GNOME-native interface for MediaTek device servicing, "
+                  "powered by MTK Client.",
+            xalign=0, wrap=True,
+        )
+        description.add_css_class("dimmed")
+        content.append(description)
+
+        links = Adw.PreferencesGroup(title="Project")
+        for label, url in (
+            ("Fuse on GitHub", "https://github.com/Dev-in-the-BM/Fuse"),
+            ("MTK Client on GitHub", "https://github.com/bkerler/mtkclient"),
+        ):
+            row = Adw.ActionRow(title=label)
+            self._make_external_row_link(row, url, f"Open {label}")
+            links.add(row)
+        content.append(links)
+
+        credits = Adw.PreferencesGroup(
+            title="Credits",
+            description="Fuse builds on the work of the MTK Client community.",
+        )
+        credit_rows = (
+            ("Fuse", "Dev-in-the-BM", "https://github.com/Dev-in-the-BM"),
+            ("MTK Client", "Bjoern Kerler (bkerler)", "https://github.com/bkerler"),
+            ("Original GUI", "Geert-Jan Kreileman", None),
+            ("kamakiri exploit", "xyzz", "https://github.com/xyzz"),
+            ("linecode and heapbait exploits", "chimera", None),
+            ("heapbait exploit", "R0rt1z2", "https://github.com/R0rt1z2"),
+            ("heapbait exploit", "Shomy", "https://github.com/shomykohai"),
+            ("Additional contributions", "Chaosmaster", "https://github.com/chaosmaster"),
+            ("MTK Client contributors", "All contributors", "https://github.com/bkerler/mtkclient/graphs/contributors"),
+        )
+        for role, person, url in credit_rows:
+            row = Adw.ActionRow(title=role, subtitle=person)
+            if url:
+                self._make_external_row_link(
+                    row, url, f"Open {person} on GitHub"
+                )
+            credits.add(row)
+        content.append(credits)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(content)
+        toolbar.set_content(scroller)
+        window.set_content(toolbar)
+        window.connect("close-request", self._about_closed)
+        escape = Gtk.ShortcutController()
+        escape.set_scope(Gtk.ShortcutScope.LOCAL)
+        escape.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("Escape"),
+            Gtk.CallbackAction.new(lambda *_args: (window.close(), True)[1]),
+        ))
+        window.add_controller(escape)
+        self.about_window = window
+        window.present()
+
+    @staticmethod
+    def _make_external_row_link(row, url, accessible_label):
+        row.set_activatable(True)
+        row.set_tooltip_text(accessible_label)
+        row.connect(
+            "activated",
+            lambda *_args: Gio.AppInfo.launch_default_for_uri(url, None),
+        )
+        icon = Gtk.Image.new_from_icon_name("adw-external-link-symbolic")
+        icon.add_css_class("dim-label")
+        icon.set_tooltip_text(accessible_label)
+        row.add_suffix(icon)
+
+    def _about_closed(self, *_args):
+        self.about_window = None
+        return GLib.SOURCE_REMOVE
 
     def _open_image_matching(self, *_args):
         if self.identify_window is None:

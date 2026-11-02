@@ -10,7 +10,7 @@ Install GTK 4 and libadwaita development/runtime packages plus PyGObject for you
 ./run.sh
 ```
 
-Set the MTK Client checkout in **Preferences → Checkout location**. The selection is saved per user and used by both `./run.sh` and the GNOME app-grid launcher. If no valid checkout is configured, the app opens so you can choose one. For temporary overrides during development, set `MTKCLIENT_DIR` to a directory containing the checkout's `pyproject.toml` and `uv.lock`:
+Install MTK Client from **Preferences → Backend installation**, or choose an existing checkout under **MTK Client backend**. Installation downloads it into the user's data directory and uses `uv` when available, otherwise a private venv and pip. It does not use sudo. USB access can be configured separately from **Preferences → USB device access**. Where PolicyKit is available, the app requests authorization for a focused udev rule; otherwise it displays manual commands. The rule grants the active local user access to MediaTek and common Android USB vendor IDs. Reconnect the device after setup. The selection is saved per user and used by both `./run.sh` and the GNOME app-grid launcher. For temporary overrides during development, set `MTKCLIENT_DIR` to a directory containing the checkout's `pyproject.toml` and `uv.lock`:
 
 ```sh
 MTKCLIENT_DIR=/path/to/mtk-client ./run.sh
