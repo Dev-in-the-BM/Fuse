@@ -1,4 +1,4 @@
-# <img src="assets/fuse-mtk-app-icon-64.png" width="60" alt=""> Fuse
+# <img src="assets/fuse-mtk-app-icon-96.png" width="60" alt=""> Fuse
 
 A modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4, and libadwaita.
 
@@ -24,9 +24,6 @@ A modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4,
 
 ![Firmware image source identification screen](screenshots/source-indentifier.png)
 
-
-
-
 ## Run
 
 Install GTK 4 and libadwaita development/runtime packages plus PyGObject for your distribution, then run:
@@ -41,7 +38,6 @@ Install MTK Client from **Preferences → Backend installation**, or choose an e
 MTKCLIENT_DIR=/path/to/mtk-client ./run.sh
 ```
 
-
 ## GNOME app-grid shortcut
 
 Make the wrapper executable and install a per-user desktop entry:
@@ -52,3 +48,4 @@ python3 install-desktop-entry.py
 ```
 
 The entry appears as **Fuse** in the GNOME app grid. The installer registers Fuse's app icon at multiple hicolor sizes and as a scalable SVG, for the launcher and dock; the same mark is shown in **About Fuse**. `run.sh` activates this project's `.venv` when present, then uses `uv run` against the selected backend checkout. It explicitly reads PyGObject from `/usr/bin/python3`, since GTK bindings are installed by the operating system, not from PyPI. Install `python3-gi`, `gir1.2-gtk-4.0`, and `gir1.2-adw-1` from your distribution packages if needed. For terminal output while developing, launch with `./run.sh` rather than invoking `uv run` directly; direct invocation does not configure the distro GI module path.
+
