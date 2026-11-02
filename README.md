@@ -26,6 +26,10 @@ An modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4
 
 
 
+<details>
+  <summary>I put this part here because your supposed to to make it look profeessional.\
+  I didn't write it or check it for accuracy.
+  </summary>
 ## Run
 
 Install GTK 4 and libadwaita development/runtime packages plus PyGObject for your distribution, then run:
@@ -50,4 +54,7 @@ chmod +x run.sh
 python3 install-desktop-entry.py
 ```
 
-The entry appears as **MTK Client** in the GNOME app grid. `run.sh` activates this project's `.venv` when present, then uses `uv run` against the selected backend checkout. It explicitly reads PyGObject from `/usr/bin/python3`, since GTK bindings are installed by the operating system, not from PyPI. Install `python3-gi`, `gir1.2-gtk-4.0`, and `gir1.2-adw-1` from your distribution packages if needed. For terminal output while developing, launch with `./run.sh` rather than invoking `uv run` directly; direct invocation does not configure the distro GI module path.
+The entry appears as **Fuse** in the GNOME app grid. `run.sh` activates this project's `.venv` when present, then uses `uv run` against the selected backend checkout. It explicitly reads PyGObject from `/usr/bin/python3`, since GTK bindings are installed by the operating system, not from PyPI. Install `python3-gi`, `gir1.2-gtk-4.0`, and `gir1.2-adw-1` from your distribution packages if needed. For terminal output while developing, launch with `./run.sh` rather than invoking `uv run` directly; direct invocation does not configure the distro GI module path.
+</details>
+
+
