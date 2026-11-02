@@ -12,8 +12,10 @@ from types import SimpleNamespace
 import cairo
 
 from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
+                          get_firmware_image_directory,
                           get_pinned_partitions, set_advanced_logging,
-                          set_backend_dir, set_pinned_partitions)
+                          set_backend_dir, set_firmware_image_directory,
+                          set_pinned_partitions)
 from mtk_image_identify import (ImageIndex, diagnose_da_reads,
                                 identify as identify_images, make_da_reader)
 
@@ -92,7 +94,8 @@ class MtkWindow(Adw.ApplicationWindow):
         self.preloader_path = None
         self.partitions = []
         self.partition_geometry = {}
-        self.identify_directory = None
+        self.identify_directory = get_firmware_image_directory()
+        self.identify_restore_started = False
         self.identify_index = None
         self.identify_monitor = None
         self.identify_monitors = []
@@ -104,6 +107,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_cancel = None
         self.identify_generation = 0
         self.identify_progress_complete = True
+        self.identify_has_progress = False
+        self.identify_waiting_on_read = False
+        self.identify_read_in_progress = False
+        self.identify_read_started_at = None
         self.identify_window = None
         self.partition_checks = {}
         self.partition_rows = {}
@@ -1091,6 +1098,19 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_window = window
         self.identify_diagnostic_button.set_sensitive(self.device_connected)
         self.identify_window.present()
+        if not self.identify_restore_started:
+            self.identify_restore_started = True
+            if self.identify_directory:
+                if os.path.isdir(self.identify_directory):
+                    self.identify_count.set_text(
+                        f"Restoring cached index for:\n{self.identify_directory}"
+                    )
+                    self._index_identify_folder(False)
+                    GLib.idle_add(self._watch_identify_directory)
+                else:
+                    self.identify_count.set_text(
+                        f"Previously selected folder is unavailable:\n{self.identify_directory}"
+                    )
 
     @staticmethod
     def _hide_image_matching(window):
@@ -2506,6 +2526,10 @@ class MtkWindow(Adw.ApplicationWindow):
             show_progress = running and identify_task
             self.identify_progress.set_visible(show_progress)
             if show_progress:
+                self.identify_has_progress = False
+                self.identify_waiting_on_read = False
+                self.identify_read_in_progress = False
+                self.identify_read_started_at = None
                 self.identify_progress.set_fraction(0)
                 self.identify_progress.set_text("Starting…")
                 self.identify_progress.pulse()
@@ -2521,8 +2545,17 @@ class MtkWindow(Adw.ApplicationWindow):
         if not self.operation_has_progress:
             for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
                 bar.pulse()
-            if getattr(self, "identify_progress", None) and self.identify_progress.get_visible():
+            if (getattr(self, "identify_progress", None)
+                    and self.identify_progress.get_visible()
+                    and not self.identify_has_progress):
                 self.identify_progress.pulse()
+        if (getattr(self, "identify_progress", None)
+                and self.identify_progress.get_visible()
+                and self.identify_waiting_on_read):
+            self.identify_progress.pulse()
+            elapsed = max(0, int(time.monotonic() - self.identify_read_started_at))
+            activity = "Device read in progress" if self.identify_read_in_progress else "Working"
+            self.identify_progress.set_text(f"{activity} · {elapsed}s")
         return GLib.SOURCE_CONTINUE
 
     def _operation_finished(self, title, error, result=None):
@@ -2565,6 +2598,7 @@ class MtkWindow(Adw.ApplicationWindow):
             folder = chooser.get_file()
             if folder:
                 self.identify_directory = folder.get_path()
+                set_firmware_image_directory(self.identify_directory)
                 self.identify_count.set_text(
                     f"Searching folder tree for .img and .bin files…\n{self.identify_directory}"
                 )
@@ -2590,6 +2624,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.identify_generation += 1
         generation = self.identify_generation
         self.identify_progress_complete = False
+        self.identify_refine_started_at = None
         self.identify_cancel_button.set_sensitive(True)
         self.identify_progress.set_visible(True)
         self.identify_progress.set_fraction(0)
@@ -2604,10 +2639,7 @@ class MtkWindow(Adw.ApplicationWindow):
                 directory, force=force,
                 cancel=cancel_token,
                 progress=lambda done, total, name: GLib.idle_add(
-                    self._set_identify_progress_text, generation,
-                    (f"Searching recursively… {total} eligible images found" if not total else
-                     f"Comparing image fingerprints…" if name.startswith("Comparing") else
-                     f"Indexed {done}/{total} images: {name}")),
+                    self._update_identify_phase_progress, generation, done, total, name),
                 byte_progress=lambda path, number, image_count, done, total: GLib.idle_add(
                     self._update_identify_file_progress, path, number, image_count,
                     done, total, directory, generation),
@@ -2634,19 +2666,55 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_count.set_text(text)
         return GLib.SOURCE_REMOVE
 
+    def _update_identify_phase_progress(self, generation, done, total, message):
+        if generation != self.identify_generation or self.identify_progress_complete:
+            return GLib.SOURCE_REMOVE
+        self.identify_has_progress = True
+        self.identify_count.set_text(message or f"Searching recursively… {total:,} eligible images found")
+        if message.startswith("Comparing coarse fingerprints"):
+            self.identify_refine_started_at = None
+            self.identify_progress.set_fraction(0)
+            self.identify_progress.set_text("Comparing coarse chunks…")
+            self.identify_progress.pulse()
+        elif message.startswith("Refining") or message.startswith("Fingerprinting"):
+            if self.identify_refine_started_at is None:
+                self.identify_refine_started_at = time.monotonic()
+            fraction = min(1.0, done / total) if total else 0.0
+            self.identify_progress.set_fraction(fraction)
+            progress_text = f"{done:,} / {total:,} chunks"
+            elapsed = time.monotonic() - self.identify_refine_started_at
+            if done and elapsed >= 0.5 and done < total:
+                remaining = int((total - done) * elapsed / done)
+                progress_text += f" · about {self._format_duration(remaining)} remaining"
+            self.identify_progress.set_text(progress_text)
+        elif message.startswith("Fingerprint refinement complete"):
+            self.identify_progress.set_fraction(1)
+            self.identify_progress.set_text("Fingerprints complete")
+            self.identify_refine_started_at = None
+        elif total:
+            self.identify_progress.set_fraction(min(1.0, done / total))
+            self.identify_progress.set_text(f"{done:,} / {total:,} images")
+        else:
+            self.identify_progress.set_fraction(0)
+            self.identify_progress.pulse()
+        return GLib.SOURCE_REMOVE
+
     def _update_identify_discovery(self, path, found, directories, root, generation):
         if generation != self.identify_generation or self.identify_progress_complete:
             return GLib.SOURCE_REMOVE
+        self.identify_has_progress = True
         relative = os.path.relpath(path, root)
         self.identify_count.set_text(
             f"Scanning folders: {directories:,} visited · {found:,} image files found\n{relative}"
         )
+        self.identify_progress.set_text(f"{directories:,} folders · {found:,} images")
         return GLib.SOURCE_REMOVE
 
     def _update_identify_file_progress(self, path, number, image_count, done, total,
                                        root, generation):
         if generation != self.identify_generation or self.identify_progress_complete:
             return GLib.SOURCE_REMOVE
+        self.identify_has_progress = True
         relative = os.path.relpath(path, root)
         if total:
             fraction = min(1.0, done / total)
@@ -2835,6 +2903,33 @@ class MtkWindow(Adw.ApplicationWindow):
         self.append_log("Read-only DA diagnostic: " + details.replace("\n", " · "))
         return GLib.SOURCE_REMOVE
 
+    def _update_identification_progress(self, partition, device_bytes, message, fraction):
+        """Show scan phase before a DA call and update after each completed read."""
+        self.identify_has_progress = True
+        reading = (
+            "sample" in message
+            or "distributed validation" in message
+            or "full verification block" in message
+        )
+        waiting = fraction is None or reading
+        if waiting and not self.identify_waiting_on_read:
+            self.identify_read_started_at = time.monotonic()
+        self.identify_waiting_on_read = waiting
+        self.identify_read_in_progress = reading
+        self.identify_count.set_text(
+            f"{message}\n{device_bytes:,} device bytes read so far"
+        )
+        if fraction is None:
+            self.identify_progress.pulse()
+        else:
+            fraction = max(0.0, min(1.0, float(fraction)))
+            self.identify_progress.set_fraction(fraction)
+            if not waiting:
+                self.identify_progress.set_text(f"{fraction:.0%} of partitions")
+            else:
+                self.identify_progress.set_text("Waiting for device read…")
+        return GLib.SOURCE_REMOVE
+
     def _scan_images(self, full):
         if not self.device_connected or not self.identify_index or self.operation_busy:
             return
@@ -2844,6 +2939,9 @@ class MtkWindow(Adw.ApplicationWindow):
         cancel_token = threading.Event()
         self.identify_cancel = cancel_token
         self.identify_cancel_button.set_sensitive(True)
+        self.identify_count.set_text(
+            "Preparing full verification…" if full else "Preparing partition identification…"
+        )
 
         def scan_worker():
             mtk = self.backend.mtk
@@ -2857,8 +2955,8 @@ class MtkWindow(Adw.ApplicationWindow):
                 full=full,
                 directory=directory,
                 cancel=cancel_token,
-                progress=lambda name, count: GLib.idle_add(
-                    self.identify_count.set_text, f"Scanning {name} · {count} bytes read"),
+                progress=lambda name, count, message, fraction: GLib.idle_add(
+                    self._update_identification_progress, name, count, message, fraction),
             )
             GLib.idle_add(self._show_identify_results, results)
 

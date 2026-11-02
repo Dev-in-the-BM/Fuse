@@ -33,6 +33,11 @@ def get_pinned_partitions():
     return [str(name) for name in value if isinstance(name, str)]
 
 
+def get_firmware_image_directory():
+    value = load_settings().get("firmware_image_directory")
+    return str(Path(value).expanduser()) if isinstance(value, str) and value else None
+
+
 def _save_settings(settings):
     APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     temporary = SETTINGS_FILE.with_suffix(".tmp")
@@ -57,4 +62,10 @@ def set_pinned_partitions(names):
     settings["pinned_partitions"] = sorted(
         {str(name) for name in names if str(name)}, key=str.casefold
     )
+    _save_settings(settings)
+
+
+def set_firmware_image_directory(path):
+    settings = load_settings()
+    settings["firmware_image_directory"] = str(Path(path).expanduser().resolve())
     _save_settings(settings)

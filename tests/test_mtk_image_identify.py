@@ -66,6 +66,18 @@ class FirmwareIdentifyTests(unittest.TestCase):
         self.assertEqual([image.path for image, _ in self.index.images(self.root)],
                          [str(extra.resolve())])
 
+    def test_unchanged_recursive_scan_does_not_rebuild_refinement_bookkeeping(self):
+        (self.root / "cached.img").write_bytes(b"cached content")
+        self.index.index_directory(self.root)
+        calls = []
+        original = self.index.refine_directory
+        self.index.refine_directory = lambda *args, **kwargs: calls.append(args)
+        try:
+            self.index.index_directory(self.root)
+        finally:
+            self.index.refine_directory = original
+        self.assertEqual(calls, [])
+
     def test_recursive_index_reports_discovery_and_byte_progress(self):
         image_path = self.root / "nested" / "deep" / "boot.img"
         image_path.parent.mkdir(parents=True)
@@ -82,6 +94,22 @@ class FirmwareIdentifyTests(unittest.TestCase):
         self.assertTrue(any(folder == image_path.parent for folder, _, _ in discovery))
         self.assertIn((image_path.resolve(), 1, 1, len(b"progress-data"),
                        len(b"progress-data")), byte_updates)
+
+    def test_fingerprint_refinement_reports_measurable_progress(self):
+        left, right = self.root / "one.img", self.root / "two.img"
+        left.write_bytes(b"A" * 8192)
+        right.write_bytes(b"A" * 4096 + b"B" * 4096)
+        phases = []
+        self.index.index_directory(self.root, progress=lambda done, total, message:
+                                    phases.append((done, total, message)))
+        self.assertTrue(any("Comparing coarse fingerprints" in message
+                            for _done, _total, message in phases))
+        refinement = [(done, total, message) for done, total, message in phases
+                      if message.startswith(("Refining", "Fingerprinting"))]
+        self.assertTrue(refinement)
+        self.assertTrue(any(total > 0 and done > 0 for done, total, _ in refinement))
+        self.assertTrue(any("Fingerprint refinement complete" in message
+                            for _done, _total, message in phases))
 
     def test_tiny_content_difference_identifies_without_filename_heuristics(self):
         a, b = self.root / "z.img", self.root / "a.img"
@@ -186,6 +214,58 @@ class FirmwareIdentifyTests(unittest.TestCase):
         self.assertEqual({offset for offset, _length in reads},
                          {0, 1_396_736, 2_793_472, 4_190_208})
         self.assertEqual(result[0][1], [("candidate-b.img", len(device))])
+
+    def test_fine_offset_query_is_bounded_to_strong_regions(self):
+        one = bytearray(b"A" * (1024 * 1024))
+        two = bytearray(one)
+        for offset in range(0, len(two), 4096):
+            two[offset] = ord("B")
+        (self.root / "one.img").write_bytes(one)
+        (self.root / "two.img").write_bytes(two)
+        self.index.index_directory(self.root)
+        candidates = self.index.images(self.root)
+        offsets = self.index.distinguishing_offsets(candidates)
+        self.assertLessEqual(len(offsets), 24)
+        self.assertTrue(offsets)
+
+    def test_identical_partition_candidate_sets_reuse_sample_plan(self):
+        content = b"shared image content" * 500
+        (self.root / "candidate.img").write_bytes(content)
+        self.index.index_directory(self.root)
+        calls = []
+        original = self.index.distinguishing_offsets
+        self.index.distinguishing_offsets = lambda candidates, **kwargs: (
+            calls.append(len(candidates)) or original(candidates, **kwargs)
+        )
+        try:
+            identify(
+                self.index,
+                [{"name": "boot_a", "size": len(content)},
+                 {"name": "boot_b", "size": len(content)}],
+                lambda _p, offset, length: content[offset:offset + length],
+                directory=self.root,
+            )
+        finally:
+            self.index.distinguishing_offsets = original
+        self.assertEqual(calls, [1])
+
+    def test_full_verification_skips_quick_offset_plan(self):
+        content = b"verify without offset planning" * 100
+        (self.root / "candidate.img").write_bytes(content)
+        self.index.index_directory(self.root)
+        original = self.index.distinguishing_offsets
+        self.index.distinguishing_offsets = lambda *_args, **_kwargs: self.fail(
+            "full verification does not need quick fingerprint samples"
+        )
+        try:
+            result = identify(
+                self.index, [{"name": "boot", "size": len(content)}],
+                lambda _p, offset, length: content[offset:offset + length],
+                full=True, directory=self.root,
+            )
+        finally:
+            self.index.distinguishing_offsets = original
+        self.assertIn("Verified whole-partition equality", result[0][2])
 
     def test_ambiguous_distributed_sampling_starts_at_about_16k(self):
         content = b"a" * (1024 * 1024)
@@ -330,6 +410,22 @@ class FirmwareIdentifyTests(unittest.TestCase):
         self.assertIsNone(read_at({"name": "boot_a"}, 8191, 2))
         self.assertEqual(len(da.calls), 1)
 
+    def test_da_reader_contains_backend_system_exit_as_unknown_read(self):
+        class MockDa:
+            def readflash(self, **_kwargs):
+                raise SystemExit(1)
+        image_path = self.root / "read-failure.img"
+        image_path.write_bytes(b"contents")
+        self.index.index_directory(self.root)
+        geometry = {"boot": {"name": "boot", "start": 0x1000,
+                             "size": 8192, "parttype": "user"}}
+        read_at = make_da_reader(MockDa(), geometry, 512)
+        result = identify(
+            self.index, [geometry["boot"]], read_at, directory=self.root,
+        )
+        self.assertIn("Unknown", result[0][2])
+        self.assertIn("DA backend aborted the read (exit 1)", result[0][2])
+
     def test_read_only_da_diagnostic_reports_alignment_region_and_usb_telemetry(self):
         image_path = self.root / "known.img"
         content = bytes((i * 29) % 256 for i in range(64 * 1024))
@@ -445,6 +541,31 @@ class FirmwareIdentifyTests(unittest.TestCase):
                           full=True, directory=self.root)
         self.assertIn("Verified image-content", result[0][2])
         self.assertEqual(result[0][1], [("prefix.img", len(content))])
+
+    def test_matching_progress_is_emitted_before_and_after_device_reads(self):
+        image_path = self.root / "boot.img"
+        image_path.write_bytes(b"firmware-content" * 1024)
+        self.index.index_directory(self.root)
+        events = []
+        content = image_path.read_bytes()
+
+        def read_at(_partition, offset, length):
+            events.append(("read", offset, length))
+            return content[offset:offset + length]
+
+        results = identify(
+            self.index, [{"name": "boot", "size": len(content)}], read_at,
+            directory=self.root,
+            progress=lambda partition, count, message, fraction: events.append(
+                ("progress", partition, count, message, fraction)
+            ),
+        )
+        read_index = next(i for i, event in enumerate(events) if event[0] == "read")
+        self.assertTrue(any(event[0] == "progress" and "at image offset" in event[3]
+                            for event in events[:read_index]))
+        self.assertTrue(any(event[0] == "progress" and "complete" in event[3]
+                            for event in events[read_index + 1:]))
+        self.assertTrue(results[0][2].startswith("Likely match"))
 
     def test_full_exact_partition_match_is_classified_separately(self):
         path = self.root / "exact.img"

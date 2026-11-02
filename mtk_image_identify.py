@@ -303,15 +303,16 @@ class ImageIndex:
         )
         if progress:
             progress(0, len(files), "")
+        content_changed = False
         for number, path in enumerate(files, 1):
             if cancel and cancel.is_set():
                 raise InterruptedError("indexing cancelled")
-            self.index_file(
+            content_changed = self.index_file(
                 str(path), force=force, cancel=cancel, refine=False,
                 progress=(lambda done, total, current=path:
                           byte_progress(current, number, len(files), done, total))
                          if byte_progress else None,
-            )
+            ) or content_changed
             if progress:
                 progress(number, len(files), path.name)
         # Remove stale paths for this selected folder; names do not affect matches.
@@ -324,22 +325,27 @@ class ImageIndex:
                 if path.startswith(root) and not os.path.isfile(path):
                     self.db.execute("DELETE FROM chunks WHERE path=?", (path,))
                     self.db.execute("DELETE FROM images WHERE path=?", (path,))
-        if progress:
-            progress(len(files), len(files), "Comparing image fingerprints…")
-        self.refine_directory(directory, cancel=cancel)
+                    content_changed = True
+        if content_changed:
+            self.refine_directory(directory, cancel=cancel, progress=progress)
+        elif progress:
+            progress(len(files), len(files), "Fingerprint cache unchanged")
         return len(files)
 
-    def refine_directory(self, directory, cancel=None):
+    def refine_directory(self, directory, cancel=None, progress=None):
         """Store 4 KiB fingerprints only inside coarse regions that differ."""
         root = os.path.realpath(directory)
         if not root.endswith(os.sep):
             root += os.sep
         rows = self.db.execute(
-            "SELECT path FROM images WHERE complete=1 ORDER BY path"
+            "SELECT path,logical_size FROM images WHERE complete=1 ORDER BY path"
         ).fetchall()
-        paths = [path for (path,) in rows if path.startswith(root)]
+        sizes = {path: size for path, size in rows if path.startswith(root)}
+        paths = list(sizes)
         if not paths:
             return
+        if progress:
+            progress(0, 0, f"Comparing coarse fingerprints across {len(paths):,} images…")
         placeholders = ",".join("?" for _ in paths)
         count = len(paths)
         groups = self.db.execute(
@@ -350,42 +356,104 @@ class ImageIndex:
             [*paths, count],
         ).fetchall()
         regions = {offset // COARSE * COARSE for offset, _length, _present, _hashes in groups}
+        ordered_regions = sorted(regions)
+        fine = self.db.execute(
+            f"SELECT DISTINCT path,offset FROM chunks WHERE level=1 AND path IN ({placeholders})",
+            paths,
+        ).fetchall()
+        existing_regions = {path: set() for path in paths}
+        stale_fine = []
+        for path, offset in fine:
+            region = offset // COARSE * COARSE
+            if region in regions:
+                existing_regions[path].add(region)
+            else:
+                stale_fine.append((path, offset))
+        tasks = [(region, path) for region in ordered_regions for path in paths
+                 if sizes[path] > region and region not in existing_regions[path]]
+        total_chunks = sum(
+            (min(COARSE, sizes[path] - region) + FINE - 1) // FINE
+            for region, path in tasks
+        )
+        if progress:
+            progress(0, total_chunks,
+                     f"Refining {len(ordered_regions):,} differing regions across "
+                     f"{len(tasks):,} image-region pairs…")
         with self.lock, self.db:
-            fine = self.db.execute(
-                f"SELECT DISTINCT path,offset FROM chunks WHERE level=1 AND path IN ({placeholders})",
-                paths,
-            ).fetchall()
-            for path, offset in fine:
-                if offset // COARSE * COARSE not in regions:
-                    self.db.execute("DELETE FROM chunks WHERE path=? AND level=1 AND offset=?", (path, offset))
-            for region in sorted(regions):
+            for path, offset in stale_fine:
+                if cancel and cancel.is_set():
+                    raise InterruptedError("fingerprint refinement cancelled")
+                self.db.execute("DELETE FROM chunks WHERE path=? AND level=1 AND offset=?", (path, offset))
+            completed_chunks = 0
+            last_report = time.monotonic()
+            region_positions = {region: i for i, region in enumerate(ordered_regions, 1)}
+            for task_number, (region, path) in enumerate(tasks, 1):
                 if cancel and cancel.is_set():
                     raise InterruptedError("indexing cancelled")
-                for path in paths:
-                    if self.db.execute(
-                        "SELECT 1 FROM chunks WHERE path=? AND level=1 AND offset>=? AND offset<? LIMIT 1",
-                        (path, region, region + COARSE),
-                    ).fetchone():
-                        continue
-                    image = Image.open(path)
-                    if region >= image.size:
-                        continue
-                    with open(path, "rb") as stream:
-                        end = min(region + COARSE, image.size)
-                        for offset in range(region, end, FINE):
-                            if cancel and cancel.is_set():
-                                raise InterruptedError("indexing cancelled")
-                            for defined_offset, content in image.defined_slices(
-                                    offset, min(FINE, end - offset), stream):
-                                digest = hashlib.blake2b(content, digest_size=32).digest()
-                                self.db.execute("INSERT OR REPLACE INTO chunks VALUES(?,?,?,?,?)",
-                                                (path, 1, defined_offset, len(content), digest))
+                image = Image.open(path)
+                with open(path, "rb") as stream:
+                    end = min(region + COARSE, image.size)
+                    for offset in range(region, end, FINE):
+                        if cancel and cancel.is_set():
+                            raise InterruptedError("fingerprint refinement cancelled")
+                        for defined_offset, content in image.defined_slices(
+                                offset, min(FINE, end - offset), stream):
+                            digest = hashlib.blake2b(content, digest_size=32).digest()
+                            self.db.execute("INSERT OR REPLACE INTO chunks VALUES(?,?,?,?,?)",
+                                            (path, 1, defined_offset, len(content), digest))
+                        completed_chunks += 1
+                        now = time.monotonic()
+                        if progress and (completed_chunks == 1 or completed_chunks % 64 == 0
+                                         or now - last_report >= 0.25):
+                            progress(
+                                completed_chunks, total_chunks,
+                                f"Fingerprinting image-region {task_number:,}/{len(tasks):,} · "
+                                f"region {region_positions[region]:,}/{len(ordered_regions):,} · "
+                                f"{os.path.relpath(path, directory)}",
+                            )
+                            last_report = now
+            if progress:
+                progress(total_chunks, total_chunks,
+                         f"Fingerprint refinement complete · {len(ordered_regions):,} "
+                         "differing regions")
 
-    def images(self, directory=None, cancel=None):
+    def images(self, directory=None, cancel=None, progress=None):
         if directory:
             # Discover newly added files as well as validating known metadata;
             # unchanged files hit the identity cache and are not rehashed.
-            self.index_directory(directory, cancel=cancel)
+            def indexing_progress(done, total, name):
+                if not progress:
+                    return
+                if name.startswith("Comparing coarse"):
+                    progress(name, None)
+                elif name.startswith("Refining") or name.startswith("Fingerprint"):
+                    fraction = done / total if total else None
+                    progress(name, fraction)
+                elif total:
+                    progress(f"Checking image cache {done:,}/{total:,}" + (f" · {name}" if name else ""),
+                             done / total * 0.2)
+
+            def discovery_progress(path, found, directories):
+                if progress:
+                    progress(
+                        f"Rechecking selected tree · {directories:,} folders · {found:,} image files · "
+                        f"{os.path.relpath(path, directory)}",
+                        None,
+                    )
+
+            def byte_progress(path, number, count, done, total):
+                if progress:
+                    fraction = (done / total) if total else 0
+                    progress(
+                        f"Reindexing {number:,}/{count:,} · {os.path.relpath(path, directory)} · "
+                        f"{fraction:.0%} of file",
+                        fraction,
+                    )
+
+            self.index_directory(
+                directory, cancel=cancel, progress=indexing_progress,
+                discovery_progress=discovery_progress, byte_progress=byte_progress,
+            )
         if directory:
             root = os.path.realpath(directory)
             if not root.endswith(os.sep):
@@ -395,6 +463,7 @@ class ImageIndex:
         else:
             rows = self.db.execute("SELECT path,logical_size FROM images WHERE complete=1 ORDER BY path").fetchall()
         # Metadata validation is the fallback for missed filesystem notifications.
+        changed_metadata = False
         for path, _size in rows:
             if cancel and cancel.is_set():
                 raise InterruptedError("matching cancelled")
@@ -407,9 +476,13 @@ class ImageIndex:
                 continue
             cached = self.db.execute("SELECT size,mtime_ns,device,inode FROM images WHERE path=?", (path,)).fetchone()
             if cached != (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino):
+                changed_metadata = True
+                if progress:
+                    progress(f"Reindexing changed image · {os.path.relpath(path, directory or os.path.dirname(path))}", None)
                 self.index_file(path, cancel=cancel, refine=False)
+        if directory and changed_metadata:
+            self.refine_directory(directory, cancel=cancel, progress=indexing_progress)
         if directory:
-            self.refine_directory(directory, cancel=cancel)
             rows = [(p, s) for p, s in rows if os.path.isfile(p)]
             rows = [(p, self.db.execute("SELECT logical_size FROM images WHERE path=?", (p,)).fetchone()[0]) for p, _ in rows]
         loaded = []
@@ -423,7 +496,7 @@ class ImageIndex:
             loaded.append((image, size))
         return loaded
 
-    def distinguishing_offsets(self, candidates):
+    def distinguishing_offsets(self, candidates, progress=None, cancel=None):
         """Offsets from content disagreement only; deterministic independent of path."""
         if len(candidates) < 2:
             return []
@@ -438,16 +511,57 @@ class ImageIndex:
                 [level, *paths, len(paths)],
             ).fetchall()
 
-        coarse_regions = {offset // COARSE * COARSE
-                          for offset, _length, _present, _digests in differing(0)}
-        fine = differing(1)
-        # Refine coarse-different regions first; within each region read the
-        # 4 KiB offset that best splits the remaining content candidates.
-        fine.sort(key=lambda item: (
-            0 if item[0] // COARSE * COARSE in coarse_regions else 1,
-            -(item[3] + len(paths) - item[2]), item[0],
+        if cancel:
+            self.db.set_progress_handler(lambda: 1 if cancel.is_set() else 0, 10_000)
+        try:
+            if progress:
+                progress("Comparing coarse image fingerprints…", None)
+            coarse_rows = differing(0)
+            if cancel and cancel.is_set():
+                raise InterruptedError("candidate fingerprint comparison cancelled")
+            # Refine only a handful of the strongest coarse regions, and retain
+            # only their most discriminating fine offsets. The index may have
+            # millions of 4 KiB hashes; aggregating all of them on every scan
+            # is needlessly expensive when quick matching reads at most ~128 KiB.
+            ranked_regions = {}
+            for offset, _length, present, digests in coarse_rows:
+                region = offset // COARSE * COARSE
+                score = digests + len(paths) - present
+                ranked_regions[region] = max(ranked_regions.get(region, 0), score)
+            regions = sorted(ranked_regions, key=lambda region: (-ranked_regions[region], region))[:6]
+            if progress:
+                progress(
+                    f"Found {len(ranked_regions):,} differing coarse regions; refining the strongest {len(regions):,}…",
+                    None,
+                )
+            fine_offsets = []
+            for region_number, region in enumerate(regions, 1):
+                if cancel and cancel.is_set():
+                    raise InterruptedError("candidate fingerprint comparison cancelled")
+                if progress:
+                    progress(
+                        f"Checking fine fingerprints in differing region {region_number}/{len(regions)} "
+                        f"at 0x{region:X}…", None,
+                    )
+                fine_offsets.extend(self.db.execute(
+                    f"SELECT offset,length,COUNT(DISTINCT path),COUNT(DISTINCT digest) "
+                    f"FROM chunks WHERE level=1 AND path IN ({placeholders}) "
+                    "AND offset>=? AND offset<? GROUP BY offset,length "
+                    f"HAVING COUNT(DISTINCT path) < ? OR COUNT(DISTINCT digest)>1 "
+                    "ORDER BY COUNT(DISTINCT digest) DESC, "
+                    "(COUNT(DISTINCT path) - COUNT(DISTINCT digest)) ASC, offset ASC LIMIT 4",
+                    [*paths, region, region + COARSE, len(paths)],
+                ).fetchall())
+        except sqlite3.OperationalError as error:
+            if cancel and cancel.is_set():
+                raise InterruptedError("candidate fingerprint comparison cancelled") from error
+            raise
+        finally:
+            if cancel:
+                self.db.set_progress_handler(None, 0)
+        return list(dict.fromkeys(
+            offset for offset, _length, _present, _digests in fine_offsets
         ))
-        return list(dict.fromkeys(offset for offset, _length, _present, _digests in fine))
 
 
 def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None, progress=None, directory=None):
@@ -456,16 +570,34 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
     partitions are mappings: name, size, and arbitrary geometry supplied to read_at.
     """
     results = []
+    partition_list = list(partitions)
+    partition_count = max(1, len(partition_list))
+    offset_plan_cache = {}
     try:
-        indexed = index.images(directory, cancel=cancel)
+        if progress:
+            progress("", 0, "Validating indexed images…", 0.0)
+        indexed = index.images(
+            directory, cancel=cancel,
+            progress=(lambda message, fraction: progress("", 0, message, fraction))
+            if progress else None,
+        )
     except InterruptedError:
         raise
     except (OSError, RuntimeError, ValueError) as error:
         return [(partition["name"], [], f"Unknown: local image indexing failed ({error})", "0 bytes")
-                for partition in partitions]
-    for partition in partitions:
+                for partition in partition_list]
+    for partition_number, partition in enumerate(partition_list, 1):
         if cancel and cancel.is_set():
             raise InterruptedError("partition scan cancelled")
+        def report(message, fraction=None):
+            if progress:
+                progress(partition["name"], sampled, message, fraction)
+
+        sampled = 0
+        report(
+            f"Partition {partition_number}/{len(partition_list)} · preparing candidates",
+            (partition_number - 1) / partition_count,
+        )
         candidates = [(image, size) for image, size in indexed if size <= partition["size"]]
         if not candidates:
             if any(not image.unchanged() for image, _size in indexed):
@@ -473,18 +605,46 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                                 "Unknown: image changed during matching", "0 bytes"))
                 continue
             results.append((partition["name"], [], "No size-compatible images", "0 bytes"))
+            report(
+                f"Partition {partition_number}/{len(partition_list)} · no size-compatible images",
+                partition_number / partition_count,
+            )
             continue
         # Content-defined differences plus evenly distributed validation samples.
-        difference_offsets = index.distinguishing_offsets(candidates)
+        report(
+            f"Partition {partition_number}/{len(partition_list)} · "
+            f"finding distinguishing offsets among {len(candidates):,} candidates",
+            None,
+        )
+        if full:
+            # Full streaming verification compares every defined image range;
+            # building a quick-sample plan first would only add local SQL work.
+            difference_offsets = []
+        else:
+            # Paths here are stable database row identities for memoization only;
+            # they never rank or decide a content match.
+            candidate_key = tuple(image.path for image, _size in candidates)
+            if candidate_key in offset_plan_cache:
+                difference_offsets = offset_plan_cache[candidate_key]
+                report(
+                    f"Partition {partition_number}/{len(partition_list)} · "
+                    "reusing the content-derived sample plan",
+                    None,
+                )
+            else:
+                difference_offsets = index.distinguishing_offsets(
+                    candidates,
+                    progress=lambda message, fraction: report(
+                        f"Partition {partition_number}/{len(partition_list)} · {message}", fraction
+                    ),
+                    cancel=cancel,
+                )
+                offset_plan_cache[candidate_key] = difference_offsets
         span = max(image.size for image, _ in candidates)
         distributed_by_path = {
             image.path: _distributed_defined_offsets(image)
             for image, _size in candidates
-        }
-        distributed = set().union(*distributed_by_path.values()) if distributed_by_path else set()
-        offsets = [] if full else [o for o in difference_offsets if o < span]
-        if not full:
-            offsets += sorted(o for o in distributed - set(offsets) if o < span)
+        } if not full else {}
         sampled, remaining, different = 0, list(candidates), set()
         coverage_compared = 0
         read_failed = False
@@ -530,23 +690,36 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                 newly_read += len(data)
             return b"".join(pieces), newly_read
 
-        for offset in offsets:
+        sample_number = 0
+
+        def compare_at(offset, label, denominator):
+            nonlocal sampled, remaining, coverage_compared, read_failed, sample_number
             if cancel and cancel.is_set():
                 raise InterruptedError("partition scan cancelled")
             width = min(FINE, span - offset)
             applicable = [image for image, size in remaining
                           if offset < size and image.defined_slices(offset, min(width, size - offset))]
             if not applicable:
-                continue
+                return
+            sample_number += 1
+            report(
+                f"Partition {partition_number}/{len(partition_list)} · {label} "
+                f"{sample_number}/{denominator} at image offset 0x{offset:X}; "
+                f"{len(remaining)} candidates",
+                ((partition_number - 1) + (sample_number - 1) / max(1, denominator)) / partition_count,
+            )
             device, newly_read = cached_device_read(offset, width)
             sampled += newly_read
             if device is None or len(device) != width:
                 potential = [(_display_path(image.path, directory), size) for image, size in remaining]
-                results.append((partition["name"], potential, "Unknown: partition read failed",
+                detail = getattr(read_at, "last_error", None)
+                reason = f" ({detail})" if detail else ""
+                results.append((partition["name"], potential,
+                                f"Unknown: partition read failed{reason}",
                                 f"{sampled} device bytes read"))
                 remaining = []
                 read_failed = True
-                break
+                return
             next_remaining = []
             for image, size in remaining:
                 if offset >= size:
@@ -566,18 +739,44 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                     if matches:
                         compared[image.path] += sum(len(data) for _, data in slices)
                         coverage_compared = max(coverage_compared, compared[image.path])
-                        if offset in distributed_by_path[image.path]:
+                        if offset in distributed_by_path.get(image.path, ()):
                             checked_offsets[image.path].add(offset)
                         next_remaining.append((image, size))
                     else:
                         different.add(image.path)
             remaining = next_remaining
-            if progress:
-                progress(partition["name"], sampled)
-            if (not full and remaining and all(
-                    set(distributed_by_path[image.path]) <= checked_offsets[image.path]
-                    for image, _size in remaining)):
-                break
+            report(
+                f"Partition {partition_number}/{len(partition_list)} · {label} "
+                f"complete; {len(remaining)} candidates remain; "
+                f"{sampled:,} device bytes read",
+                ((partition_number - 1) + sample_number / max(1, denominator)) / partition_count,
+            )
+
+        # Probe content-derived offsets first so differing candidates are
+        # eliminated before spending USB reads on their distributed checks.
+        # This is especially important for large image folders: checkpoints
+        # for eliminated candidates must not generate extra device reads.
+        if not full:
+            for offset_number, offset in enumerate(difference_offsets, 1):
+                if len(remaining) <= 1 or read_failed:
+                    break
+                if offset < span:
+                    compare_at(offset, "difference-aware sample", len(difference_offsets) + 4)
+
+            # Now validate four distributed points for each survivor. Overlaps
+            # are naturally shared by the device byte cache, and offsets that
+            # belonged only to eliminated candidates are skipped.
+            distributed_targets = set().union(*(
+                distributed_by_path[image.path] for image, _size in remaining
+            )) if remaining else set()
+            for offset in sorted(distributed_targets):
+                if read_failed:
+                    break
+                if not any(offset in distributed_by_path[image.path]
+                           and offset not in checked_offsets[image.path]
+                           for image, _size in remaining):
+                    continue
+                compare_at(offset, "distributed validation", len(distributed_targets))
         if read_failed:
             continue
         if full and remaining:
@@ -603,6 +802,13 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                                 slices_by_path[image.path] = slices
                     if not slices_by_path:
                         continue
+                    block_number = offset // COARSE + 1
+                    block_count = (max_size + COARSE - 1) // COARSE
+                    report(
+                        f"Partition {partition_number}/{len(partition_list)} · full verification "
+                        f"block {block_number}/{block_count} at image offset 0x{offset:X}",
+                        ((partition_number - 1) + (block_number - 1) / max(1, block_count)) / partition_count,
+                    )
                     ranges = sorted((logical_offset, logical_offset + len(data))
                                     for slices in slices_by_path.values()
                                     for logical_offset, data in slices)
@@ -639,11 +845,17 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                         else:
                             different.add(image.path)
                     active = still_active
-                    if progress:
-                        progress(partition["name"], sampled)
+                    report(
+                        f"Partition {partition_number}/{len(partition_list)} · verified through "
+                        f"image offset 0x{offset + width:X}; {sampled:,} device bytes read",
+                        ((partition_number - 1) + block_number / max(1, block_count)) / partition_count,
+                    )
             if failed_read:
                 potential = [(_display_path(image.path, directory), size) for image, size in active]
-                results.append((partition["name"], potential, "Unknown: full verification read failed",
+                detail = getattr(read_at, "last_error", None)
+                reason = f" ({detail})" if detail else ""
+                results.append((partition["name"], potential,
+                                f"Unknown: full verification read failed{reason}",
                                 f"{sampled} device bytes read"))
                 continue
             remaining = list(active)
@@ -675,6 +887,10 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
         # Keep ambiguous candidates; display basename but never use it for ranking.
         results.append((partition["name"], [(_display_path(i.path, directory), s) for i, s in remaining],
                         status, f"{sampled} device bytes read; up to {coverage_compared} defined image bytes compared"))
+        report(
+            f"Partition {partition_number}/{len(partition_list)} complete · {status}",
+            partition_number / partition_count,
+        )
     if directory:
         root = os.path.realpath(directory)
         current = {os.path.realpath(path) for path in _image_files(root)}
@@ -739,17 +955,31 @@ def make_da_reader(daloader, partition_geometry, pagesize, observer=None):
         addr = geometry["start"] + aligned_offset
         started = time.monotonic()
         data = None
+        read_error = None
         try:
             data = daloader.readflash(
                 addr=addr, length=aligned_length,
                 filename="", parttype=geometry["parttype"], display=False,
             )
+        except SystemExit as error:
+            # Some MTK DA implementations call sys.exit(1) when readback is
+            # unsupported/rejected. Contain that backend behavior in this
+            # worker and surface it as an Unknown comparison, not app failure.
+            read_error = f"DA backend aborted the read (exit {error.code})"
+        except Exception as error:
+            read_error = f"{type(error).__name__}: {error}"
         finally:
             if observer:
                 observer(offset, length, addr, aligned_length, geometry["parttype"],
                          time.monotonic() - started,
                          len(data) if isinstance(data, (bytes, bytearray)) else 0)
+        read_at.last_error = read_error
         if not isinstance(data, (bytes, bytearray)) or len(data) != aligned_length:
+            if read_error is None:
+                read_at.last_error = (
+                    f"DA returned {len(data) if isinstance(data, (bytes, bytearray)) else 0} "
+                    f"bytes; expected {aligned_length}"
+                )
             return None
         return bytes(data[leading:leading + length])
 
