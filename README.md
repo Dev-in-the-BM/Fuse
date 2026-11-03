@@ -52,6 +52,7 @@ If installing from a source checkout for development, see [Run from source](#run
 
 <details>
   <summary><h2>If you like playing with the source</h2></summary>
+  
 ## Run from source
 
 For development, install GTK 4, libadwaita 1.4+, Cairo, and PyGObject using your
