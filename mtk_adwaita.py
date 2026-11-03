@@ -1960,7 +1960,8 @@ class MtkWindow(Adw.ApplicationWindow):
 
         box.append(self.dump_gpt)
         box.append(self._storage_page())
-        return self._scrolled(clamp)
+        self.partition_scroller = self._scrolled(clamp)
+        return self.partition_scroller
 
     def _storage_page(self):
         section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -2493,6 +2494,11 @@ class MtkWindow(Adw.ApplicationWindow):
     def _refresh_partition_view(self):
         if not hasattr(self, "partition_rows"):
             return
+        # Rebuilding the ListBox children can make GTK's scroll anchoring jump
+        # when a drop also selects/reprioritizes a partition. Keep the page's
+        # viewport at the same position across that rebuild.
+        adjustment = self.partition_scroller.get_vadjustment()
+        scroll_y = adjustment.get_value()
         query = self.partition_search.get_text().strip().casefold()
         if self.partition_sort.get_selected() == 1:
             names = sorted(self.partition_rows, key=str.casefold)
@@ -2537,6 +2543,14 @@ class MtkWindow(Adw.ApplicationWindow):
             self.partition_stack.set_visible_child_name("empty")
         self.select_all.set_sensitive(self.device_connected and visible_count > 0)
         self.show_partition_sources.set_sensitive(self.device_connected and visible_count > 0)
+        GLib.idle_add(self._restore_partition_scroll, scroll_y)
+
+    def _restore_partition_scroll(self, scroll_y):
+        adjustment = self.partition_scroller.get_vadjustment()
+        maximum = max(adjustment.get_lower(),
+                      adjustment.get_upper() - adjustment.get_page_size())
+        adjustment.set_value(min(scroll_y, maximum))
+        return GLib.SOURCE_REMOVE
 
     def _toggle_partition_sources(self, check):
         visible = check.get_active()
