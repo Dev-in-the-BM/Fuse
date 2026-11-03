@@ -23,6 +23,7 @@ from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
                           set_pinned_partitions)
 from backend_manager import (backend_python_paths, default_backend_dir,
                              install_backend, is_backend_checkout,
+                             resolve_backend_checkout,
                              setup_usb_permissions)
 from bounded_logging import configure_backend_file_logging
 from mtk_image_identify import (ImageIndex, identify as identify_images,
@@ -91,7 +92,13 @@ class MtkWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="MTK Client")
         self.set_default_size(900, 650)
+        self.preferences_window = None
         self.backend_welcome = None
+        self.backend_setup_stack = None
+        self.backend_setup_back_button = None
+        self.backend_install_running = False
+        self.backend_install_host = None
+        self.backend_setup_error_label = None
         self.backend = None
         self.connection_thread = None
         self.connection_status_source = None
@@ -866,12 +873,13 @@ class MtkWindow(Adw.ApplicationWindow):
         group.add(row)
         self.backend_install_row = Adw.ActionRow(
             title="Install MTK Client",
-            subtitle="Download and install MTK Client and its dependancies.",
+            subtitle="Download and set up MTK Client for this user.",
+            activatable=True,
         )
-        self.backend_install_button = Gtk.Button(label="Download and Install")
-        self.backend_install_button.set_valign(Gtk.Align.CENTER)
-        self.backend_install_button.connect("clicked", self._install_backend)
-        self.backend_install_row.add_suffix(self.backend_install_button)
+        self.backend_install_row.add_suffix(
+            Gtk.Image.new_from_icon_name("go-next-symbolic")
+        )
+        self.backend_install_row.connect("activated", self._install_backend)
         group.add(self.backend_install_row)
         page.add(group)
         usb_group = Adw.PreferencesGroup(
@@ -935,6 +943,7 @@ class MtkWindow(Adw.ApplicationWindow):
         window.connect("close-request", self._preferences_closed)
         self.preferences_window = window
         self.backend_path_row = row
+        self.backend_setup_error_label = None
         window.present()
 
     def _setup_usb_permissions(self, *_args):
@@ -994,68 +1003,115 @@ class MtkWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _install_backend(self, *_args):
-        window = Gtk.Window(
-            title="Install MTK Client",
-            transient_for=self.preferences_window or self.backend_welcome or self,
-            modal=True,
-            default_width=520,
-            default_height=380,
-            resizable=True,
+        from_preferences = self.preferences_window is not None
+        if from_preferences:
+            self.backend_setup_back_button = None
+        if not from_preferences and not self.backend_welcome:
+            self.show_backend_welcome(present=False)
+        if not from_preferences:
+            self.backend_setup_title.set_text("Install MTK Client")
+            self.backend_setup_back_button.set_visible(True)
+            previous_page = self.backend_setup_stack.get_child_by_name("install")
+            if previous_page:
+                self.backend_setup_stack.remove(previous_page)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        outer.set_margin_top(24)
+        outer.set_margin_bottom(24)
+        outer.set_margin_start(28)
+        outer.set_margin_end(28)
+        clamp = Adw.Clamp(maximum_size=680)
+        clamp.set_child(outer)
+
+        title = Gtk.Label(label="Install MTK Client", xalign=0)
+        title.add_css_class("title-1")
+        outer.append(title)
+        explanation = Gtk.Label(
+            label="Fuse will download MTK Client and set it up for this user. This can take a few minutes.",
+            wrap=True, xalign=0,
         )
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        outer.set_margin_top(18)
-        outer.set_margin_bottom(18)
-        outer.set_margin_start(18)
-        outer.set_margin_end(18)
-        outer.append(Gtk.Label(
-            label="Download and install MTK Client and its dependancies?",
-            wrap=True,
-            xalign=0,
-        ))
+        explanation.add_css_class("dim-label")
+        outer.append(explanation)
+
         status = Gtk.Label(label="Ready to install", xalign=0)
         outer.append(status)
         progress = Gtk.ProgressBar(show_text=False)
         outer.append(progress)
-        outer.append(Gtk.Label(label="Live log", xalign=0))
-        log_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.NONE)
+        log_heading = Gtk.Label(label="Installation details", xalign=0)
+        log_heading.add_css_class("heading")
+        outer.append(log_heading)
+        log_view = Gtk.TextView(
+            editable=False, cursor_visible=False, monospace=True,
+            wrap_mode=Gtk.WrapMode.WORD_CHAR,
+        )
         log_view.add_css_class("card")
-        log_scroll = Gtk.ScrolledWindow(vexpand=True, min_content_height=150)
+        log_scroll = Gtk.ScrolledWindow(vexpand=True, min_content_height=220)
         log_scroll.set_child(log_view)
         outer.append(log_scroll)
+
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
                           halign=Gtk.Align.END)
-        cancel_button = Gtk.Button(label="Cancel")
         install_button = Gtk.Button(label="Download and Install")
         install_button.add_css_class("suggested-action")
-        buttons.append(cancel_button)
         buttons.append(install_button)
         outer.append(buttons)
-        window.set_child(outer)
-        self.backend_install_dialog = window
+        if from_preferences:
+            page = Adw.NavigationPage(child=clamp, title="Install MTK Client")
+            self.preferences_window.push_subpage(page)
+            self.backend_install_host = "preferences"
+        else:
+            self.backend_setup_stack.add_named(clamp, "install")
+            self.backend_setup_stack.set_visible_child_name("install")
+            self.backend_install_host = "welcome"
+        self.backend_install_dialog = (
+            self.preferences_window if from_preferences else self.backend_welcome
+        )
         self.backend_install_status = status
         self.backend_install_progress = progress
         self.backend_install_log = log_view.get_buffer()
-        self.backend_install_cancel = cancel_button
-        cancel_button.connect("clicked", lambda *_: window.close())
-        install_button.connect("clicked", self._start_backend_install)
-        window.present()
+        self.backend_install_button = install_button
+        self.backend_install_complete = False
+        install_button.connect("clicked", self._backend_install_button_clicked)
+        if not from_preferences:
+            self.backend_welcome.present()
+
+    def _backend_install_button_clicked(self, *_args):
+        if self.backend_install_complete:
+            if self.backend_install_host == "preferences":
+                self.preferences_window.pop_subpage()
+            else:
+                self.backend_welcome.close()
+                self.backend_welcome = None
+            return
+        self._start_backend_install(self.backend_install_button)
 
     def _start_backend_install(self, button):
         button.set_sensitive(False)
-        self.backend_install_cancel.set_sensitive(False)
+        self.backend_install_running = True
+        if self.backend_setup_back_button:
+            self.backend_setup_back_button.set_sensitive(False)
+        self.backend_install_log.set_text("")
+        self.backend_install_progress.set_fraction(0)
+        self.backend_install_progress.set_show_text(False)
         self.backend_install_status.set_text("Starting download…")
         self.backend_install_progress.pulse()
         self.backend_install_pulse_id = GLib.timeout_add(
             120, self._backend_install_pulse
         )
-        self.backend_install_dialog.connect("close-request", self._backend_install_close_request)
         threading.Thread(target=self._install_backend_worker, daemon=True).start()
 
     def _backend_install_close_request(self, *_args):
         # The installer cannot safely be interrupted mid-package operation.
-        if not self.backend_install_cancel.get_sensitive():
+        if self.backend_install_running:
             return True
+        self.backend_welcome = None
         return False
+
+    def _backend_setup_go_back(self, *_args):
+        self.backend_setup_stack.set_visible_child_name("welcome")
+        self.backend_setup_title.set_text("Backend setup")
+        self.backend_setup_back_button.set_visible(False)
+        self.backend_setup_back_button.set_sensitive(True)
 
     def _install_backend_worker(self):
         global MTKCLIENT_DIR
@@ -1084,26 +1140,29 @@ class MtkWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _backend_install_finished(self, path, error):
+        self.backend_install_running = False
         if self.backend_install_pulse_id:
             GLib.source_remove(self.backend_install_pulse_id)
             self.backend_install_pulse_id = None
         if error:
-            self.backend_install_status.set_text("Installation failed")
+            self.backend_install_status.set_text("MTK Client could not be installed")
             self._backend_install_append_log(error)
-            self.backend_install_cancel.set_label("Close")
-            self.backend_install_cancel.set_sensitive(True)
-            self.toast_overlay.add_toast(Adw.Toast(title=f"Backend installation failed: {error}"))
+            if self.backend_setup_back_button:
+                self.backend_setup_back_button.set_sensitive(True)
+            self.backend_install_button.set_label("Try Again")
+            self.backend_install_button.set_sensitive(True)
         else:
             if getattr(self, "backend_path_row", None):
                 self.backend_path_row.set_subtitle(path)
-            self.backend_install_status.set_text("Installation complete")
+            self.backend_install_status.set_text("MTK Client is ready")
             self.backend_install_progress.set_fraction(1.0)
-            self.backend_install_cancel.set_label("Close")
-            self.backend_install_cancel.set_sensitive(True)
-            if self.backend_welcome:
-                self.backend_welcome.close()
-                self.backend_welcome = None
-            self.toast_overlay.add_toast(Adw.Toast(title="MTK Client backend installed."))
+            self.backend_install_progress.set_text("Complete")
+            self.backend_install_progress.set_show_text(True)
+            if self.backend_setup_back_button:
+                self.backend_setup_back_button.set_sensitive(True)
+            self.backend_install_button.set_label("Close")
+            self.backend_install_button.set_sensitive(True)
+            self.backend_install_complete = True
         return GLib.SOURCE_REMOVE
 
     def _advanced_logging_changed(self, switch, _param):
@@ -1122,44 +1181,108 @@ class MtkWindow(Adw.ApplicationWindow):
                 Adw.Toast(title=f"Could not save backend log limit: {error}")
             )
 
-    def show_backend_welcome(self):
+    def show_backend_welcome(self, present=True):
         if self.backend_welcome:
             self.backend_welcome.present()
             return
         window = Adw.Window(
             transient_for=self, modal=True, title="Set up MTK Client",
-            default_width=520, default_height=420,
+            default_width=520, default_height=440,
         )
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        page.set_margin_top(36)
-        page.set_margin_bottom(32)
-        page.set_margin_start(32)
-        page.set_margin_end(32)
-        page.set_valign(Gtk.Align.CENTER)
-        icon = Gtk.Image.new_from_icon_name("folder-download-symbolic")
-        icon.set_pixel_size(48)
-        page.append(icon)
-        title = Gtk.Label(label="Set up MTK Client", xalign=0.5)
-        title.add_css_class("title-1")
-        page.append(title)
+        header = Adw.HeaderBar()
+        self.backend_setup_back_button = Gtk.Button(label="Back")
+        self.backend_setup_back_button.set_visible(False)
+        self.backend_setup_back_button.connect("clicked", self._backend_setup_go_back)
+        header.pack_start(self.backend_setup_back_button)
+        self.backend_setup_title = Gtk.Label(label="Backend setup")
+        header.set_title_widget(self.backend_setup_title)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(header)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22)
+        content.set_halign(Gtk.Align.CENTER)
+        content.set_valign(Gtk.Align.CENTER)
+        content.set_margin_top(28)
+        content.set_margin_bottom(28)
+        content.set_margin_start(24)
+        content.set_margin_end(24)
+        clamp = Adw.Clamp(maximum_size=440)
+        clamp.set_child(content)
+
+        intro = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        intro.set_halign(Gtk.Align.CENTER)
+        icon = Gtk.Image.new_from_icon_name("applications-engineering-symbolic")
+        icon.set_pixel_size(40)
+        intro.append(icon)
+        title = Gtk.Label(label="Connect Fuse to MTK Client")
+        title.add_css_class("title-2")
+        title.set_wrap(True)
+        title.set_justify(Gtk.Justification.CENTER)
+        intro.append(title)
         description = Gtk.Label(
-            label="Fuse needs an MTK Client installation to work with MediaTek devices. Choose an existing installation, or download and install one now.",
-            wrap=True, justify=Gtk.Justification.CENTER, xalign=0.5,
+            label="Choose an existing installation, or let Fuse download and set one up for you.",
+            wrap=True,
+            justify=Gtk.Justification.CENTER,
         )
-        description.add_css_class("body")
-        page.append(description)
-        choose = Gtk.Button(label="Choose Existing Installation…")
-        choose.connect("clicked", self._choose_backend_dir)
-        page.append(choose)
-        install = Gtk.Button(label="Download and Install")
-        install.add_css_class("suggested-action")
-        install.connect("clicked", self._install_backend)
-        page.append(install)
-        window.set_content(page)
+        description.add_css_class("dim-label")
+        description.set_max_width_chars(54)
+        intro.append(description)
+        content.append(intro)
+
+        choices = Gtk.ListBox()
+        choices.set_selection_mode(Gtk.SelectionMode.NONE)
+        choices.add_css_class("boxed-list")
+        self.backend_setup_error_label = Gtk.Label(
+            label=(
+                "We couldn't find MTK Client there. Choose the MTK Client folder "
+                "or the Fuse project folder, then try again."
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        self.backend_setup_error_label.add_css_class("error")
+        self.backend_setup_error_label.set_visible(False)
+        content.append(self.backend_setup_error_label)
+        choose_row = Adw.ActionRow(
+            title="Choose an existing installation",
+            subtitle="Select an MTK Client folder on this computer",
+            activatable=True,
+        )
+        choose_row.add_prefix(Gtk.Image.new_from_icon_name("folder-open-symbolic"))
+        choose_row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        install_row = Adw.ActionRow(
+            title="Download and install",
+            subtitle="Set up MTK Client for this user",
+            activatable=True,
+        )
+        install_row.add_prefix(Gtk.Image.new_from_icon_name("folder-download-symbolic"))
+        install_row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        choices.append(choose_row)
+        choices.append(install_row)
+        choices.connect("row-activated", self._backend_welcome_choice)
+        content.append(choices)
+        self.backend_setup_stack = Gtk.Stack(
+            transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
+            transition_duration=220,
+        )
+        self.backend_setup_stack.add_named(clamp, "welcome")
+        toolbar.set_content(self.backend_setup_stack)
+        window.set_content(toolbar)
         self.backend_welcome = window
-        window.present()
+        window.connect("close-request", self._backend_install_close_request)
+        if present:
+            window.present()
+
+    def _backend_welcome_choice(self, _list_box, row):
+        if row.get_index() == 0:
+            self._choose_backend_dir()
+        else:
+            self._install_backend()
 
     def _preferences_closed(self, *_args):
+        if (self.backend_install_running
+                and self.backend_install_host == "preferences"):
+            return True
         self.preferences_window = None
         return GLib.SOURCE_REMOVE
 
@@ -1179,22 +1302,29 @@ class MtkWindow(Adw.ApplicationWindow):
             folder = chooser.get_file()
             path = folder.get_path() if folder else None
             if path:
-                path = os.path.realpath(path)
-                if not (os.path.isfile(os.path.join(path, "pyproject.toml"))
-                        and os.path.isfile(os.path.join(path, "uv.lock"))):
-                    self.toast_overlay.add_toast(Adw.Toast(
-                        title="Choose a checkout containing pyproject.toml and uv.lock"
-                    ))
+                checkout = resolve_backend_checkout(path)
+                if not checkout:
+                    message = (
+                        "We couldn't find MTK Client there. Choose the MTK Client "
+                        "folder or the Fuse project folder, then try again."
+                    )
+                    if self.backend_setup_error_label:
+                        self.backend_setup_error_label.set_visible(True)
+                        self.backend_setup_error_label.set_text(message)
+                    if getattr(self, "backend_path_row", None):
+                        self.backend_path_row.set_subtitle(message)
                 else:
+                    path = str(checkout)
                     set_backend_dir(path)
                     global MTKCLIENT_DIR
                     MTKCLIENT_DIR = path
+                    if self.backend_setup_error_label:
+                        self.backend_setup_error_label.set_visible(False)
                     if getattr(self, "backend_path_row", None):
                         self.backend_path_row.set_subtitle(path)
                     if self.backend_welcome:
                         self.backend_welcome.close()
                         self.backend_welcome = None
-                    self.toast_overlay.add_toast(Adw.Toast(title="MTK Client backend selected."))
         chooser.destroy()
 
     @staticmethod

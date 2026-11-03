@@ -25,6 +25,17 @@ def is_backend_checkout(path):
     return (path / "pyproject.toml").is_file() and (path / "uv.lock").is_file()
 
 
+def resolve_backend_checkout(path):
+    """Resolve either an MTK Client checkout or a Fuse root containing one."""
+    path = Path(path).expanduser().resolve()
+    if is_backend_checkout(path):
+        return path
+    nested_checkout = path / "mtkclient"
+    if is_backend_checkout(nested_checkout):
+        return nested_checkout.resolve()
+    return None
+
+
 def backend_python_paths(checkout):
     """Return backend source and its installed venv packages, if present."""
     checkout = Path(checkout).expanduser().resolve()

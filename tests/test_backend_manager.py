@@ -8,6 +8,18 @@ import backend_manager
 
 
 class BackendInstallTests(unittest.TestCase):
+    def test_resolve_backend_checkout_accepts_checkout_or_fuse_project_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "Fuse"
+            checkout = project / "mtkclient"
+            checkout.mkdir(parents=True)
+            (checkout / "pyproject.toml").touch()
+            (checkout / "uv.lock").touch()
+
+            self.assertEqual(backend_manager.resolve_backend_checkout(checkout), checkout)
+            self.assertEqual(backend_manager.resolve_backend_checkout(project), checkout)
+            self.assertIsNone(backend_manager.resolve_backend_checkout(Path(temp)))
+
     def test_default_checkout_uses_fuse_data_directory(self):
         with patch.dict(os.environ, {"XDG_DATA_HOME": "/tmp/fuse-test-data"}):
             self.assertEqual(
