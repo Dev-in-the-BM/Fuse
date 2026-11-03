@@ -1,0 +1,38 @@
+{
+  "app-id": "quest.devinthebm.fuse",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "51",
+  "sdk": "org.gnome.Sdk//50",
+  "command": "fuse",
+  "finish-args": [
+    "--share=ipc",
+    "--share=network",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--device=all"
+  ],
+  "modules": [
+    {
+      "name": "fuse",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -d /app/lib/python3.14/site-packages /app/share/fuse /app/share/fuse/assets /app/bin /app/share/applications /app/share/icons/hicolor/scalable/apps",
+        "install -m 755 libfuse.so.2 /app/lib/libfuse.so.2",
+        "cp -a python-libs/. /app/lib/python3.14/site-packages/",
+        "install -m 644 app_settings.py backend_manager.py bounded_logging.py mtk_adwaita.py mtk_image_identify.py sitecustomize.py /app/share/fuse/",
+        "cp -a assets/. /app/share/fuse/assets/",
+        "cp -a mtkclient /app/share/fuse/mtkclient",
+        "install -m 644 backend-revision /app/share/fuse/backend-revision",
+        "install -m 755 fuse /app/bin/fuse",
+        "install -m 644 quest.devinthebm.fuse.desktop /app/share/applications/quest.devinthebm.fuse.desktop",
+        "install -m 644 quest.devinthebm.fuse.svg /app/share/icons/hicolor/scalable/apps/quest.devinthebm.fuse.svg"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "source"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+assets/52-mtkclient.rules
+assets/connect-power-off.svg
+assets/connect-test-point.svg
+assets/connect-usb-buttons.svg
+assets/connect-usb-preloader.svg
+assets/device-connected.svg
+assets/device-ready.svg
+assets/fuse-mtk-app-icon-128.png
+assets/reboot-device.png

@@ -30,6 +30,18 @@ class DebianPackagingTests(unittest.TestCase):
             self.assertIn(f"{module} usr/lib/fuse", install)
             self.assertTrue((ROOT / module).is_file())
         self.assertIn("assets/52-mtkclient.rules lib/udev/rules.d", install)
+        self.assertNotIn("assets usr/lib/fuse", install)
+        for asset in (
+            "assets/connect-power-off.svg",
+            "assets/connect-test-point.svg",
+            "assets/connect-usb-buttons.svg",
+            "assets/connect-usb-preloader.svg",
+            "assets/device-connected.svg",
+            "assets/device-ready.svg",
+            "assets/fuse-mtk-app-icon-128.png",
+            "assets/reboot-device.png",
+        ):
+            self.assertIn(f"{asset} usr/lib/fuse/assets", install)
         self.assertIn("python3-gi", control)
         self.assertIn("gir1.2-gtk-4.0", control)
         self.assertIn("gir1.2-adw-1", control)

@@ -97,14 +97,16 @@ class Image:
     def __init__(self, path: str, extents: list[Extent], size: int):
         self.path, self.extents, self.size = path, extents, size
         stat = os.stat(path)
-        self.identity = (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
+        self.identity = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                         stat.st_dev, stat.st_ino)
 
     def unchanged(self):
         try:
             stat = os.stat(self.path)
         except OSError:
             return False
-        return self.identity == (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
+        return self.identity == (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                                 stat.st_dev, stat.st_ino)
 
     @classmethod
     def open(cls, path: str):
@@ -234,11 +236,35 @@ class ImageIndex:
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS images(path TEXT PRIMARY KEY, display TEXT NOT NULL,
               size INTEGER NOT NULL, logical_size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-              device INTEGER NOT NULL, inode INTEGER NOT NULL, complete INTEGER NOT NULL);
+              ctime_ns INTEGER NOT NULL DEFAULT 0, device INTEGER NOT NULL,
+              inode INTEGER NOT NULL, complete INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS chunks(path TEXT NOT NULL, level INTEGER NOT NULL,
               offset INTEGER NOT NULL, length INTEGER NOT NULL, digest BLOB NOT NULL,
               PRIMARY KEY(path,level,offset,length));
         """)
+        image_columns = {row[1] for row in self.db.execute("PRAGMA table_info(images)")}
+        if "ctime_ns" not in image_columns:
+            # Backfill the new metadata from files whose old metadata still
+            # agrees. Their existing content fingerprints remain usable; only
+            # files that have changed since their last index need reindexing.
+            with self.db:
+                self.db.execute(
+                    "ALTER TABLE images ADD COLUMN ctime_ns INTEGER NOT NULL DEFAULT 0"
+                )
+                legacy_rows = self.db.execute(
+                    "SELECT path,size,mtime_ns,device,inode FROM images WHERE complete=1"
+                ).fetchall()
+                for path, size, mtime_ns, device, inode in legacy_rows:
+                    try:
+                        stat = os.stat(path)
+                    except OSError:
+                        continue
+                    if (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino) == (
+                            size, mtime_ns, device, inode):
+                        self.db.execute(
+                            "UPDATE images SET ctime_ns=? WHERE path=?",
+                            (stat.st_ctime_ns, path),
+                        )
         primary_key = tuple(
             row[1] for row in sorted(
                 (row for row in self.db.execute("PRAGMA table_info(chunks)").fetchall() if row[5]),
@@ -273,15 +299,21 @@ class ImageIndex:
     def index_file(self, path: str, force=False, cancel=None, progress=None, refine=True):
         path = os.path.realpath(path)
         stat = os.stat(path)
-        cached = self.db.execute("SELECT size,mtime_ns,device,inode,complete FROM images WHERE path=?", (path,)).fetchone()
-        identity = (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, 1)
+        cached = self.db.execute(
+            "SELECT size,mtime_ns,ctime_ns,device,inode,complete FROM images WHERE path=?",
+            (path,),
+        ).fetchone()
+        identity = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                    stat.st_dev, stat.st_ino, 1)
         if not force and cached == identity:
             return False
         image = Image.open(path)
         with self.lock, self.db:
-            self.db.execute("INSERT OR REPLACE INTO images VALUES(?,?,?,?,?,?,?,0)",
-                            (path, os.path.basename(path), stat.st_size, image.size,
-                             stat.st_mtime_ns, stat.st_dev, stat.st_ino))
+            self.db.execute("""INSERT OR REPLACE INTO images
+                (path,display,size,logical_size,mtime_ns,ctime_ns,device,inode,complete)
+                VALUES(?,?,?,?,?,?,?,?,0)""",
+                (path, os.path.basename(path), stat.st_size, image.size,
+                 stat.st_mtime_ns, stat.st_ctime_ns, stat.st_dev, stat.st_ino))
             self.db.execute("DELETE FROM chunks WHERE path=?", (path,))
             with open(path, "rb") as image_stream:
                 for offset in range(0, image.size, COARSE):
@@ -295,7 +327,8 @@ class ImageIndex:
                     if progress:
                         progress(offset + length, image.size)
             after = os.stat(path)
-            if (after.st_size, after.st_mtime_ns, after.st_dev, after.st_ino) != identity[:4]:
+            if (after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+                    after.st_dev, after.st_ino) != identity[:5]:
                 self.db.execute("DELETE FROM chunks WHERE path=?", (path,))
                 self.db.execute("DELETE FROM images WHERE path=?", (path,))
                 raise RuntimeError("image changed while it was being indexed")
@@ -484,8 +517,12 @@ class ImageIndex:
                     self.db.execute("DELETE FROM chunks WHERE path=?", (path,))
                     self.db.execute("DELETE FROM images WHERE path=?", (path,))
                 continue
-            cached = self.db.execute("SELECT size,mtime_ns,device,inode FROM images WHERE path=?", (path,)).fetchone()
-            if cached != (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino):
+            cached = self.db.execute(
+                "SELECT size,mtime_ns,ctime_ns,device,inode FROM images WHERE path=?",
+                (path,),
+            ).fetchone()
+            if cached != (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                          stat.st_dev, stat.st_ino):
                 changed_metadata = True
                 if progress:
                     progress(f"Reindexing changed image · {os.path.relpath(path, directory or os.path.dirname(path))}", None)
@@ -499,7 +536,7 @@ class ImageIndex:
         for path, size in rows:
             image = Image.open(path)
             cached = self.db.execute(
-                "SELECT size,mtime_ns,device,inode FROM images WHERE path=?", (path,)
+                "SELECT size,mtime_ns,ctime_ns,device,inode FROM images WHERE path=?", (path,)
             ).fetchone()
             if cached != image.identity:
                 raise RuntimeError("image changed while matching was being prepared")

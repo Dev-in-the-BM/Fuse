@@ -37,8 +37,10 @@ class FirmwareIdentifyTests(unittest.TestCase):
         image = folder / "boot.img"
         image.write_bytes(b"firmware")
         self.index.db.execute(
-            "INSERT INTO images VALUES(?,?,?,?,?,?,?,?)",
-            (str(image), image.name, 8, 8, 1, 1, 1, 1),
+            """INSERT INTO images
+               (path,display,size,logical_size,mtime_ns,ctime_ns,device,inode,complete)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (str(image), image.name, 8, 8, 1, 1, 1, 1, 1),
         )
         self.index.db.commit()
         self.assertTrue(self.index.has_indexed_images(folder))
@@ -182,6 +184,24 @@ class FirmwareIdentifyTests(unittest.TestCase):
         self.assertEqual(self.index.images()[0][0].read(0, 6), b"after!")
         self.assertTrue(self.index.index_file(path, force=True))
 
+    def test_content_replacement_with_preserved_mtime_invalidates_cache(self):
+        path = self.root / "replaced.img"
+        path.write_bytes(b"before")
+        self.index.index_file(path)
+        original_stat = path.stat()
+        path.write_bytes(b"after!")
+        os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+        # Size and mtime alone are unchanged; ctime records the replacement.
+        self.assertEqual(path.stat().st_size, original_stat.st_size)
+        self.assertEqual(path.stat().st_mtime_ns, original_stat.st_mtime_ns)
+        self.assertNotEqual(path.stat().st_ctime_ns, original_stat.st_ctime_ns)
+        self.assertEqual(self.index.images()[0][0].read(0, 6), b"after!")
+        row = self.index.db.execute(
+            "SELECT ctime_ns FROM images WHERE path=?", (str(path.resolve()),)
+        ).fetchone()
+        self.assertEqual(row[0], path.stat().st_ctime_ns)
+
     def test_legacy_cache_schema_is_migrated(self):
         legacy_path = self.root / "legacy.sqlite3"
         with sqlite3.connect(legacy_path) as db:
@@ -192,7 +212,46 @@ class FirmwareIdentifyTests(unittest.TestCase):
             (row for row in legacy.db.execute("PRAGMA table_info(chunks)") if row[5]),
             key=lambda row: row[5]))
         self.assertEqual(primary_key, ("path", "level", "offset", "length"))
+        self.assertIn("ctime_ns", {
+            row[1] for row in legacy.db.execute("PRAGMA table_info(images)")
+        })
         legacy.db.close()
+
+    def test_ctime_migration_preserves_unchanged_cached_fingerprints(self):
+        legacy_path = self.root / "cached-legacy.sqlite3"
+        image_path = self.root / "preserved.img"
+        content = b"previously indexed firmware"
+        image_path.write_bytes(content)
+        stat = image_path.stat()
+        with sqlite3.connect(legacy_path) as db:
+            db.execute("""CREATE TABLE images(
+                path TEXT PRIMARY KEY, display TEXT NOT NULL, size INTEGER NOT NULL,
+                logical_size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+                device INTEGER NOT NULL, inode INTEGER NOT NULL, complete INTEGER NOT NULL)""")
+            db.execute("""CREATE TABLE chunks(
+                path TEXT NOT NULL, level INTEGER NOT NULL, offset INTEGER NOT NULL,
+                length INTEGER NOT NULL, digest BLOB NOT NULL,
+                PRIMARY KEY(path,level,offset,length))""")
+            db.execute("INSERT INTO images VALUES(?,?,?,?,?,?,?,1)",
+                       (str(image_path.resolve()), image_path.name, len(content),
+                        len(content), stat.st_mtime_ns, stat.st_dev, stat.st_ino))
+            db.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
+                       (str(image_path.resolve()), 0, 0, len(content), b"cached digest"))
+
+        migrated = ImageIndex(legacy_path)
+        try:
+            row = migrated.db.execute(
+                "SELECT complete,ctime_ns FROM images WHERE path=?",
+                (str(image_path.resolve()),),
+            ).fetchone()
+            self.assertEqual(row, (1, stat.st_ctime_ns))
+            self.assertFalse(migrated.index_file(image_path))
+            self.assertEqual(migrated.db.execute(
+                "SELECT digest FROM chunks WHERE path=?",
+                (str(image_path.resolve()),),
+            ).fetchone(), (b"cached digest",))
+        finally:
+            migrated.db.close()
 
     def test_cancelled_index_is_not_committed_complete(self):
         path = self.root / "cancelled.img"

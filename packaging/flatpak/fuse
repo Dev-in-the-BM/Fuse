@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+APP_ID=quest.devinthebm.fuse
+APP_DIR=/app/share/fuse
+DATA_HOME="${XDG_DATA_HOME:-${HOME}/.var/app/${APP_ID}/data}"
+BUNDLED_BACKEND="${DATA_HOME}/fuse/bundled-backend"
+REVISION="$(cat "${APP_DIR}/backend-revision")"
+
+if [ ! -f "${BUNDLED_BACKEND}/.fuse-bundle-revision" ] ||
+   [ "$(cat "${BUNDLED_BACKEND}/.fuse-bundle-revision")" != "${REVISION}" ]; then
+	install -d "${BUNDLED_BACKEND}"
+	cp -a "${APP_DIR}/mtkclient/." "${BUNDLED_BACKEND}/"
+	printf '%s\n' "${REVISION}" > "${BUNDLED_BACKEND}/.fuse-bundle-revision"
+fi
+
+export FUSE_BUNDLED_BACKEND_DIR="${BUNDLED_BACKEND}"
+export FUSE_LIBRARY_PATH=/app/lib/libfuse.so.2
+exec /usr/bin/python3 "${APP_DIR}/mtk_adwaita.py" "$@"

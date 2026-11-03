@@ -11,14 +11,12 @@ Package: quest.devinthebm.fuse
 Architecture: all
 Depends:
  ${misc:Depends},
- git,
  gir1.2-adw-1,
  gir1.2-gtk-4.0,
  python3,
  python3-cairo,
  python3-gi,
  python3-gi-cairo,
- python3-pip,
  python3-venv
 Description: GNOME-native MediaTek device client
  Fuse is a GTK 4 and libadwaita frontend for MTK Client. It can read, write,

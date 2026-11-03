@@ -21,8 +21,9 @@ from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
                           set_auto_identify_partitions,
                           set_firmware_image_directory,
                           set_pinned_partitions)
-from backend_manager import (default_backend_dir, install_backend,
-                             is_backend_checkout, setup_usb_permissions)
+from backend_manager import (backend_python_paths, default_backend_dir,
+                             install_backend, is_backend_checkout,
+                             setup_usb_permissions)
 from bounded_logging import configure_backend_file_logging
 from mtk_image_identify import (ImageIndex, identify as identify_images,
                                 make_da_reader)
@@ -38,7 +39,9 @@ APP_ID = "quest.devinthebm.fuse"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_LOG_CHARS = 200_000
 _saved_backend_dir = get_backend_dir()
+_bundled_backend_dir = os.environ.get("FUSE_BUNDLED_BACKEND_DIR")
 _backend_candidates = (_saved_backend_dir, default_backend_dir(),
+                       _bundled_backend_dir,
                        os.path.join(APP_DIR, "mtkclient"),
                        os.path.join(APP_DIR, "..", "mtkclient"))
 MTKCLIENT_DIR = os.environ.get(
@@ -2121,6 +2124,8 @@ class MtkWindow(Adw.ApplicationWindow):
                 f"Could not enforce backend log storage limit: "
                 f"{self.backend_log_setup_error}"
             ) from self.backend_log_setup_error
+        backend_paths = [str(path) for path in backend_python_paths(MTKCLIENT_DIR)]
+        sys.path[:0] = [path for path in backend_paths if path not in sys.path]
         from mtkclient.Library.DA.mtk_da_handler import DaHandler
         from mtkclient.Library.Partitions.gpt import GptSettings
         from mtkclient.Library.mtk_class import Mtk
@@ -3813,7 +3818,8 @@ class MtkWindow(Adw.ApplicationWindow):
 class MtkApplication(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID,
-                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+                         flags=getattr(Gio.ApplicationFlags, "DEFAULT_FLAGS",
+                                       Gio.ApplicationFlags.FLAGS_NONE))
 
     def do_activate(self):
         window = self.props.active_window

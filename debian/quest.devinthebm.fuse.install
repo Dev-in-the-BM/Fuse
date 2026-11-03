@@ -4,7 +4,15 @@ bounded_logging.py usr/lib/fuse
 mtk_adwaita.py usr/lib/fuse
 mtk_image_identify.py usr/lib/fuse
 sitecustomize.py usr/lib/fuse
-assets usr/lib/fuse
+assets/52-mtkclient.rules usr/lib/fuse/assets
+assets/connect-power-off.svg usr/lib/fuse/assets
+assets/connect-test-point.svg usr/lib/fuse/assets
+assets/connect-usb-buttons.svg usr/lib/fuse/assets
+assets/connect-usb-preloader.svg usr/lib/fuse/assets
+assets/device-connected.svg usr/lib/fuse/assets
+assets/device-ready.svg usr/lib/fuse/assets
+assets/fuse-mtk-app-icon-128.png usr/lib/fuse/assets
+assets/reboot-device.png usr/lib/fuse/assets
 debian/fuse usr/bin
 debian/quest.devinthebm.fuse.desktop usr/share/applications
 assets/52-mtkclient.rules lib/udev/rules.d
