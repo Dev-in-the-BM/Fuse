@@ -3152,6 +3152,16 @@ class MtkWindow(Adw.ApplicationWindow):
     def _operation_finished(self, title, error, result=None):
         self.operation_title = None
         self._set_operation_running(False)
+        if title in ("Read partitions", "Write partitions", "Erase partitions") or title.startswith("Read "):
+            notification = Gio.Notification.new(title)
+            notification.set_body(
+                f"{title} failed. See Logs for details." if error
+                else f"{title} completed successfully."
+            )
+            notification.set_icon(Gio.ThemedIcon.new("drive-harddisk-symbolic"))
+            self.get_application().send_notification(
+                f"operation-{time.monotonic_ns()}", notification
+            )
         if title in ("Identify firmware", "Verify firmware matches"):
             self.identify_cancel_button.set_sensitive(False)
             self.identify_cancel_button.set_visible(False)
@@ -3507,9 +3517,19 @@ class MtkWindow(Adw.ApplicationWindow):
             "Preparing image checks",
         )
         self._clear_identify_results()
-        for name, bar in self.partition_source_labels.items():
+        scan_names = (partition_name,) if partition_name else tuple(self.partition_source_labels)
+        if partition_name:
+            for name in self.partition_source_labels:
+                if name != partition_name:
+                    self._set_partition_source_display(
+                        name, self.partition_sources.get(name, "No source found")
+                    )
+        for name in scan_names:
+            bar = self.partition_source_labels.get(name)
+            if bar is None:
+                continue
             bar.set_fraction(0)
-            bar.set_text("Processing…")
+            bar.set_text("Checking selected file…" if image_path else "Processing…")
             self.partition_source_stacks[name].set_visible_child_name("processing")
             self.partition_source_stacks[name].set_visible(
                 self.show_partition_sources.get_active()
@@ -3532,13 +3552,15 @@ class MtkWindow(Adw.ApplicationWindow):
                 progress=lambda name, count, message, fraction: GLib.idle_add(
                     self._update_identification_progress, name, count, message, fraction),
                 on_partition_result=lambda result: GLib.idle_add(
-                    self._show_partition_source_result, result, directory),
+                    self._show_partition_source_result, result,
+                    os.path.dirname(image_path) if image_path else directory,
+                    image_path),
             )
-            GLib.idle_add(self._show_identify_results, results)
+            GLib.idle_add(self._show_identify_results, results, image_path)
 
         self._run_operation("Verify firmware matches" if full else "Identify firmware", scan_worker)
 
-    def _show_identify_results(self, results):
+    def _show_identify_results(self, results, image_path=None):
         while child := self.identify_result_list.get_first_child():
             self.identify_result_list.remove(child)
         self.identify_results_note.set_text("")
@@ -3559,17 +3581,31 @@ class MtkWindow(Adw.ApplicationWindow):
         for partition, matches, status, _coverage in results:
             if partition in self.partition_sources:
                 if len(matches) == 1 and status.startswith(("Likely match", "Verified")):
-                    source = os.path.realpath(os.path.join(
-                        self.identify_directory, matches[0][0]
-                    ))
+                    source = (os.path.realpath(image_path) if image_path else
+                              os.path.realpath(os.path.join(
+                                  self.identify_directory, matches[0][0])))
+                    display_source = source
+                    if image_path:
+                        if status.startswith("Verified"):
+                            display_source = f"Match confirmed: {os.path.basename(image_path)}"
+                        else:
+                            display_source = f"Likely match: {os.path.basename(image_path)}"
                 elif len(matches) > 1:
                     source = f"Ambiguous ({len(matches)} images)"
+                    display_source = source
                 elif status.startswith("Unknown"):
                     source = "Unknown"
+                    display_source = (f"Could not verify: {os.path.basename(image_path)}"
+                                     if image_path else source)
                 else:
-                    source = "No match"
+                    if image_path and status.startswith(("Different", "No size-compatible")):
+                        source = display_source = (
+                            f"No match: {os.path.basename(image_path)}"
+                        )
+                    else:
+                        source = display_source = "No match"
                 self.partition_sources[partition] = source
-                self._set_partition_source_display(partition, source)
+                self._set_partition_source_display(partition, display_source)
             geometry = self.partition_geometry.get(partition, {})
             if status.startswith("Verified whole-partition equality"):
                 outcome = "Verified · whole partition"
@@ -3581,10 +3617,12 @@ class MtkWindow(Adw.ApplicationWindow):
                 outcome = "Likely match · not fully verified"
                 icon = "dialog-warning-symbolic"
             elif status == "Different":
-                outcome = "No match found"
+                outcome = (f"No match found against {os.path.basename(image_path)}"
+                           if image_path else "No match found")
                 icon = "dialog-information-symbolic"
             elif status.startswith("No size-compatible"):
-                outcome = "No matching image"
+                outcome = (f"File does not fit partition: {os.path.basename(image_path)}"
+                           if image_path else "No matching image")
                 icon = "dialog-information-symbolic"
             elif status.startswith("Unknown"):
                 outcome = "Could not confirm a match"
@@ -3592,6 +3630,9 @@ class MtkWindow(Adw.ApplicationWindow):
             else:
                 outcome = status
                 icon = "dialog-information-symbolic"
+
+            if image_path and (status.startswith(("Verified", "Likely match"))):
+                outcome += f" · Matched against {os.path.basename(image_path)}"
 
             warnings = []
             if status.startswith("Unknown:"):
@@ -3679,20 +3720,30 @@ class MtkWindow(Adw.ApplicationWindow):
             self.show_partition_sources.get_active()
         )
 
-    def _show_partition_source_result(self, result, directory):
+    def _show_partition_source_result(self, result, directory, image_path=None):
         partition, matches, status, _coverage = result
         if partition not in self.partition_sources:
             return GLib.SOURCE_REMOVE
         if len(matches) == 1 and status.startswith(("Likely match", "Verified")):
             source = os.path.realpath(os.path.join(directory, matches[0][0]))
+            display_source = source
+            if image_path:
+                prefix = "Match confirmed" if status.startswith("Verified") else "Likely match"
+                display_source = f"{prefix}: {os.path.basename(image_path)}"
         elif len(matches) > 1:
             source = f"Ambiguous ({len(matches)} images)"
+            display_source = source
         elif status.startswith("Unknown"):
             source = "Unknown"
+            display_source = (f"Could not verify: {os.path.basename(image_path)}"
+                             if image_path else source)
         else:
-            source = "No match"
+            if image_path and status.startswith(("Different", "No size-compatible")):
+                source = display_source = f"No match: {os.path.basename(image_path)}"
+            else:
+                source = display_source = "No match"
         self.partition_sources[partition] = source
-        self._set_partition_source_display(partition, source)
+        self._set_partition_source_display(partition, display_source)
         return GLib.SOURCE_REMOVE
 
     def _read_partitions(self, selected, folder, include_gpt=True):
