@@ -48,6 +48,10 @@ def get_firmware_image_directory():
     return str(Path(value).expanduser()) if isinstance(value, str) and value else None
 
 
+def get_auto_identify_partitions(default=False):
+    return bool(load_settings().get("auto_identify_partitions", default))
+
+
 def _save_settings(settings):
     APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     temporary = SETTINGS_FILE.with_suffix(".tmp")
@@ -91,4 +95,10 @@ def set_pinned_partitions(names):
 def set_firmware_image_directory(path):
     settings = load_settings()
     settings["firmware_image_directory"] = str(Path(path).expanduser().resolve())
+    _save_settings(settings)
+
+
+def set_auto_identify_partitions(enabled):
+    settings = load_settings()
+    settings["auto_identify_partitions"] = bool(enabled)
     _save_settings(settings)

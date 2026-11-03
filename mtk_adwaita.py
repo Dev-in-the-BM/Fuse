@@ -14,9 +14,11 @@ from types import SimpleNamespace
 import cairo
 
 from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
-                          get_backend_log_limit_mb, get_firmware_image_directory,
+                          get_auto_identify_partitions, get_backend_log_limit_mb,
+                          get_firmware_image_directory,
                           get_pinned_partitions, set_advanced_logging,
                           set_backend_dir, set_backend_log_limit_mb,
+                          set_auto_identify_partitions,
                           set_firmware_image_directory,
                           set_pinned_partitions)
 from backend_manager import (default_backend_dir, install_backend,
@@ -113,6 +115,7 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partitions = []
         self.partition_geometry = {}
         self.identify_directory = get_firmware_image_directory()
+        self.auto_identify_partitions = get_auto_identify_partitions()
         self.identify_restore_started = False
         self.identify_index = None
         self.identify_monitor = None
@@ -1290,7 +1293,7 @@ class MtkWindow(Adw.ApplicationWindow):
         button.update_property([Gtk.AccessibleProperty.LABEL], ["Main menu"])
         menu = Gio.Menu()
         menu.append("Connect", "win.show-connect")
-        menu.append("Firmware image matching", "win.show-identify")
+        menu.append("Partition Identifier", "win.show-identify")
         menu.append("Logs", "win.show-logs")
         menu.append("Preferences", "win.show-settings")
         menu.append("About Fuse", "win.show-about")
@@ -1414,10 +1417,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.about_window = None
         return GLib.SOURCE_REMOVE
 
-    def _open_image_matching(self, *_args):
+    def _open_image_matching(self, *_args, present=True, restore=True):
         if self.identify_window is None:
             window = Adw.Window(
-                transient_for=self, modal=True, title="Firmware image matching",
+                transient_for=self, modal=True, title="Partition Identifier",
                 default_width=780, default_height=660,
             )
             toolbar = Adw.ToolbarView()
@@ -1483,7 +1486,21 @@ class MtkWindow(Adw.ApplicationWindow):
                 button.set_sensitive(False)
             self.identify_cancel_button.set_visible(False)
             box.append(actions)
+            self.auto_identify_row = Adw.ActionRow(
+                title="Identify partitions when a device connects",
+                subtitle="Run the partition scan automatically for each connected device",
+            )
+            self.auto_identify_switch = Gtk.Switch(
+                active=self.auto_identify_partitions, valign=Gtk.Align.CENTER,
+            )
+            self.auto_identify_switch.set_accessible_role(Gtk.AccessibleRole.SWITCH)
+            self.auto_identify_row.add_suffix(self.auto_identify_switch)
+            self.auto_identify_row.set_activatable_widget(self.auto_identify_switch)
+            self.auto_identify_switch.connect(
+                "notify::active", self._auto_identify_setting_changed
+            )
             box.append(setup_controls)
+            box.append(self.auto_identify_row)
             self.identify_phase = Gtk.Label(label="No image folder selected", xalign=0)
             self.identify_phase.add_css_class("heading")
             self.identify_phase.set_ellipsize(Pango.EllipsizeMode.END)
@@ -1530,8 +1547,9 @@ class MtkWindow(Adw.ApplicationWindow):
             window.set_content(toolbar)
             window.connect("close-request", self._hide_image_matching)
             self.identify_window = window
-        self.identify_window.present()
-        if not self.identify_restore_started:
+        if present:
+            self.identify_window.present()
+        if restore and not self.identify_restore_started:
             self.identify_restore_started = True
             if self.identify_directory:
                 if os.path.isdir(self.identify_directory):
@@ -1551,6 +1569,24 @@ class MtkWindow(Adw.ApplicationWindow):
         # menu activation; closing the window should not dispose its controls.
         window.set_visible(False)
         return True
+
+    def _auto_identify_setting_changed(self, switch, *_args):
+        self.auto_identify_partitions = switch.get_active()
+        set_auto_identify_partitions(self.auto_identify_partitions)
+
+    def _run_auto_identification(self):
+        """Use cached image fingerprints only; never start folder indexing."""
+        if (not self.device_connected or not self.identify_directory
+                or not os.path.isdir(self.identify_directory) or self.operation_busy
+                or (self.identify_index_thread and self.identify_index_thread.is_alive())):
+            return
+        if self.identify_index is None:
+            self.identify_index = ImageIndex(APP_CONFIG_DIR / "firmware-images.sqlite3")
+        if not self.identify_index.has_indexed_images(self.identify_directory):
+            return
+        if self.identify_window is None:
+            self._open_image_matching(present=False, restore=False)
+        self._scan_images(False)
 
     def show_page(self, name):
         if name == "device" or self.device_connected:
@@ -2283,6 +2319,10 @@ class MtkWindow(Adw.ApplicationWindow):
         self.operation_status.set_text(f"{len(partitions)} partitions available")
         self.storage_status.set_text("Device connected. Select a storage area.")
         self.tools_status.set_text("Device connected. Security tools are available.")
+        # Automatic identification never starts indexing. It only runs when
+        # the image index is already loaded and the identifier UI is ready.
+        if self.auto_identify_partitions:
+            self._run_auto_identification()
         for button in (self.raw_read_button, self.raw_write_button, self.key_button,
                        self.unlock_button, self.lock_button):
             button.set_sensitive(True)

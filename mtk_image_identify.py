@@ -260,6 +260,16 @@ class ImageIndex:
         self.db.commit()
         self.lock = threading.RLock()
 
+    def has_indexed_images(self, directory):
+        """Return whether a folder has usable cached fingerprints already."""
+        root = os.path.realpath(directory)
+        if not root.endswith(os.sep):
+            root += os.sep
+        return self.db.execute(
+            "SELECT 1 FROM images WHERE complete=1 AND substr(path,1,?)=? LIMIT 1",
+            (len(root), root),
+        ).fetchone() is not None
+
     def index_file(self, path: str, force=False, cancel=None, progress=None, refine=True):
         path = os.path.realpath(path)
         stat = os.stat(path)

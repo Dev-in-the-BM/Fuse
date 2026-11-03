@@ -31,6 +31,22 @@ class FirmwareIdentifyTests(unittest.TestCase):
         self.index.db.close()
         self.temp.cleanup()
 
+    def test_has_indexed_images_only_accepts_complete_rows_inside_folder(self):
+        folder = self.root / "firmware"
+        folder.mkdir()
+        image = folder / "boot.img"
+        image.write_bytes(b"firmware")
+        self.index.db.execute(
+            "INSERT INTO images VALUES(?,?,?,?,?,?,?,?)",
+            (str(image), image.name, 8, 8, 1, 1, 1, 1),
+        )
+        self.index.db.commit()
+        self.assertTrue(self.index.has_indexed_images(folder))
+        self.assertFalse(self.index.has_indexed_images(self.root / "other"))
+        self.index.db.execute("UPDATE images SET complete=0")
+        self.index.db.commit()
+        self.assertFalse(self.index.has_indexed_images(folder))
+
     def test_raw_and_sparse_defined_content(self):
         raw = self.root / "raw.img"
         raw.write_bytes(b"abc")
