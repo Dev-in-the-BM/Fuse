@@ -152,6 +152,14 @@ class MtkWindow(Adw.ApplicationWindow):
         pin_action = Gio.SimpleAction.new("toggle-pin", None)
         pin_action.connect("activate", self._toggle_partition_pin_action)
         menu_actions.add_action(pin_action)
+        for action_name, callback in (
+            ("open-location", self._open_partition_location_action),
+            ("verify", self._verify_partition_action),
+            ("match-file", self._match_partition_file_action),
+        ):
+            action = Gio.SimpleAction.new(action_name, None)
+            action.connect("activate", callback)
+            menu_actions.add_action(action)
         self._partition_menu_popover.insert_action_group("row", menu_actions)
 
         self.header = Adw.HeaderBar()
@@ -2554,6 +2562,13 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _partition_menu_model(self, name):
         menu = Gio.Menu()
+        source = self.partition_sources.get(name, "No source found")
+        matched_path = (source if isinstance(source, str) and os.path.isfile(source)
+                        else None)
+        if matched_path:
+            menu.append("Open Partition Location", "row.open-location")
+        menu.append("Full Verification", "row.verify")
+        menu.append("Match Against File…", "row.match-file")
         menu.append(
             "Unpin from top" if name in self.pinned_partitions else "Pin to top",
             "row.toggle-pin",
@@ -2594,6 +2609,52 @@ class MtkWindow(Adw.ApplicationWindow):
         rectangle.height = 1
         popover.set_pointing_to(rectangle)
         popover.popup()
+
+    def _open_partition_location_action(self, *_args):
+        name = self._partition_menu_target
+        self._partition_menu_target = None
+        if name is None:
+            return
+        source = self.partition_sources.get(name)
+        if not source or not os.path.isfile(source):
+            return
+        self._partition_menu_popover.popdown()
+        try:
+            Gio.AppInfo.launch_default_for_uri(Path(source).parent.as_uri(), None)
+        except GLib.Error as error:
+            self.toast_overlay.add_toast(Adw.Toast(title=f"Could not open folder: {error}"))
+
+    def _verify_partition_action(self, *_args):
+        name = self._partition_menu_target
+        self._partition_menu_target = None
+        self._partition_menu_popover.popdown()
+        if name is not None:
+            self._scan_images(True, partition_name=name)
+
+    def _match_partition_file_action(self, *_args):
+        name = self._partition_menu_target
+        self._partition_menu_target = None
+        self._partition_menu_popover.popdown()
+        if name is None:
+            return
+        chooser = Gtk.FileChooserNative.new(
+            "Match Partition Against File", self, Gtk.FileChooserAction.OPEN,
+            "Match", "Cancel",
+        )
+        chooser.set_filter((file_filter := Gtk.FileFilter()))
+        file_filter.set_name("Firmware images (*.img, *.bin)")
+        file_filter.add_pattern("*.img")
+        file_filter.add_pattern("*.IMG")
+        file_filter.add_pattern("*.bin")
+        file_filter.add_pattern("*.BIN")
+        chooser.connect("response", self._match_partition_file_response, name)
+        chooser.show()
+
+    def _match_partition_file_response(self, chooser, response, name):
+        path = chooser.get_file().get_path() if response == Gtk.ResponseType.ACCEPT else None
+        chooser.destroy()
+        if path:
+            self._scan_images(True, partition_name=name, image_path=path)
 
     def _toggle_partition_pin_action(self, *_args):
         name = self._partition_menu_target
@@ -3106,7 +3167,9 @@ class MtkWindow(Adw.ApplicationWindow):
         else:
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title} completed")
-            self.toast_overlay.add_toast(Adw.Toast(title=f"{title} completed"))
+            toast_title = ("Firmware identification completed"
+                           if title == "Identify firmware" else f"{title} completed")
+            self.toast_overlay.add_toast(Adw.Toast(title=toast_title))
         if self.identify_pending_change and self.identify_directory:
             self.identify_pending_change = False
             GLib.timeout_add(100, self._reindex_after_change)
@@ -3407,7 +3470,7 @@ class MtkWindow(Adw.ApplicationWindow):
             self.identify_progress.set_fraction(fraction)
         return GLib.SOURCE_REMOVE
 
-    def _scan_images(self, full):
+    def _scan_images(self, full, partition_name=None, image_path=None):
         if (not self.device_connected or not self.identify_index or self.operation_busy
                 or (self.identify_index_thread and self.identify_index_thread.is_alive())):
             return
@@ -3426,9 +3489,15 @@ class MtkWindow(Adw.ApplicationWindow):
         displayed_names.extend(
             name for name in self.partition_geometry if name not in displayed_names
         )
+        if partition_name is not None and partition_name not in self.partition_geometry:
+            return
         partition_geometry = {
             name: self.partition_geometry[name] for name in displayed_names
+            if partition_name is None or name == partition_name
         }
+        if image_path:
+            image_index = ImageIndex(APP_CONFIG_DIR / "partition-match.sqlite3")
+            directory = None
         cancel_token = threading.Event()
         self.identify_cancel = cancel_token
         self.identify_cancel_button.set_sensitive(True)
@@ -3447,6 +3516,8 @@ class MtkWindow(Adw.ApplicationWindow):
             )
 
         def scan_worker():
+            if image_path:
+                image_index.index_file(image_path, refine=False)
             mtk = self.backend.mtk
             daloader = mtk.daloader
             # Direct random-access reads through the already-authenticated DA.
