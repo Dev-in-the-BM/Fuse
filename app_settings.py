@@ -7,6 +7,9 @@ from pathlib import Path
 
 APP_CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mtkclient-adwaita"
 SETTINGS_FILE = APP_CONFIG_DIR / "settings.json"
+DEFAULT_BACKEND_LOG_LIMIT_MB = 50
+MIN_BACKEND_LOG_LIMIT_MB = 50
+MAX_BACKEND_LOG_LIMIT_MB = 2048
 
 
 def load_settings():
@@ -24,6 +27,13 @@ def get_backend_dir(default=None):
 
 def get_advanced_logging(default=False):
     return bool(load_settings().get("advanced_logging", default))
+
+
+def get_backend_log_limit_mb():
+    value = load_settings().get("backend_log_limit_mb", DEFAULT_BACKEND_LOG_LIMIT_MB)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return DEFAULT_BACKEND_LOG_LIMIT_MB
+    return min(MAX_BACKEND_LOG_LIMIT_MB, max(MIN_BACKEND_LOG_LIMIT_MB, value))
 
 
 def get_pinned_partitions():
@@ -48,6 +58,19 @@ def _save_settings(settings):
 def set_advanced_logging(enabled):
     settings = load_settings()
     settings["advanced_logging"] = bool(enabled)
+    _save_settings(settings)
+
+
+def set_backend_log_limit_mb(limit_mb):
+    if isinstance(limit_mb, bool) or not isinstance(limit_mb, int):
+        raise ValueError("Backend log limit must be an integer number of MiB")
+    if not MIN_BACKEND_LOG_LIMIT_MB <= limit_mb <= MAX_BACKEND_LOG_LIMIT_MB:
+        raise ValueError(
+            f"Backend log limit must be between {MIN_BACKEND_LOG_LIMIT_MB} "
+            f"and {MAX_BACKEND_LOG_LIMIT_MB} MiB"
+        )
+    settings = load_settings()
+    settings["backend_log_limit_mb"] = limit_mb
     _save_settings(settings)
 
 

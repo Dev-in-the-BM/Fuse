@@ -1,5 +1,6 @@
 app_settings.py usr/lib/fuse
 backend_manager.py usr/lib/fuse
+bounded_logging.py usr/lib/fuse
 mtk_adwaita.py usr/lib/fuse
 mtk_image_identify.py usr/lib/fuse
 sitecustomize.py usr/lib/fuse

@@ -130,10 +130,31 @@ class FirmwareIdentifyTests(unittest.TestCase):
         (self.root / "one.bin").write_bytes(b"hello")
         (self.root / "two.img").write_bytes(b"hello")
         self.index.index_directory(self.root)
+        completed = []
         result = identify(self.index, [{"name": "boot", "size": 32}],
                           lambda _p, off, length: b"hello"[off:off + length],
-                          directory=self.root)
+                          directory=self.root, on_partition_result=completed.append)
         self.assertEqual(len(result[0][1]), 2)
+        self.assertEqual(completed, result)
+
+    def test_partition_result_callback_runs_before_next_partition_scan(self):
+        (self.root / "boot.img").write_bytes(b"hello")
+        self.index.index_directory(self.root)
+        completed = []
+
+        def read_at(partition, offset, length):
+            if partition["name"] == "system":
+                self.assertEqual([result[0] for result in completed], ["boot"])
+            return b"hello"[offset:offset + length]
+
+        identify(
+            self.index,
+            [{"name": "boot", "size": 2}, {"name": "system", "size": 32}],
+            read_at,
+            directory=self.root,
+            on_partition_result=completed.append,
+        )
+        self.assertEqual([result[0] for result in completed], ["boot", "system"])
 
     def test_cache_metadata_invalidation_and_force(self):
         path = self.root / "cache.bin"

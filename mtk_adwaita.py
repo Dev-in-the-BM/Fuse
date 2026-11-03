@@ -14,12 +14,14 @@ from types import SimpleNamespace
 import cairo
 
 from app_settings import (APP_CONFIG_DIR, get_advanced_logging, get_backend_dir,
-                          get_firmware_image_directory,
+                          get_backend_log_limit_mb, get_firmware_image_directory,
                           get_pinned_partitions, set_advanced_logging,
-                          set_backend_dir, set_firmware_image_directory,
+                          set_backend_dir, set_backend_log_limit_mb,
+                          set_firmware_image_directory,
                           set_pinned_partitions)
 from backend_manager import (default_backend_dir, install_backend,
                              is_backend_checkout, setup_usb_permissions)
+from bounded_logging import configure_backend_file_logging
 from mtk_image_identify import (ImageIndex, identify as identify_images,
                                 make_da_reader)
 
@@ -129,6 +131,8 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_checks = {}
         self.partition_rows = {}
         self.partition_source_labels = {}
+        self.partition_source_stacks = {}
+        self.partition_source_texts = {}
         self.partition_sources = {}
         self.partition_pin_status = {}
         self.partition_images = {}
@@ -198,6 +202,34 @@ class MtkWindow(Adw.ApplicationWindow):
             Gtk.CallbackAction.new(self.focus_partition_search),
         ))
         self.add_controller(shortcuts)
+
+        self.backend_log_setup_event = threading.Event()
+        self.backend_log_setup_error = None
+        self.backend_log_setup_thread = threading.Thread(
+            target=self._initialize_backend_log_storage,
+            name="backend-log-limit",
+            daemon=True,
+        )
+        self.backend_log_setup_thread.start()
+
+    def _initialize_backend_log_storage(self):
+        try:
+            if is_backend_checkout(MTKCLIENT_DIR):
+                configure_backend_file_logging(
+                    MTKCLIENT_DIR, get_backend_log_limit_mb() * 1024 * 1024
+                )
+        except Exception as error:
+            self.backend_log_setup_error = error
+            GLib.idle_add(self._backend_log_setup_failed, str(error))
+        finally:
+            self.backend_log_setup_event.set()
+
+    def _backend_log_setup_failed(self, error):
+        self.append_log(f"Could not enforce backend log limit: {error}")
+        self.toast_overlay.add_toast(Adw.Toast(
+            title=f"Could not apply backend log limit: {error}"
+        ))
+        return GLib.SOURCE_REMOVE
 
     def focus_partition_search(self, *_args):
         self.stack.set_visible_child_name("partitions")
@@ -857,6 +889,32 @@ class MtkWindow(Adw.ApplicationWindow):
         logging_row.add_suffix(self.advanced_logging_switch)
         logging_row.set_activatable_widget(self.advanced_logging_switch)
         logging_group.add(logging_row)
+        self.backend_log_limit_spin = Gtk.SpinButton.new_with_range(
+            50, 2048, 50
+        )
+        self.backend_log_limit_spin.set_digits(0)
+        self.backend_log_limit_spin.set_numeric(True)
+        self.backend_log_limit_spin.set_width_chars(5)
+        self.backend_log_limit_spin.set_valign(Gtk.Align.CENTER)
+        self.backend_log_limit_spin.set_value(get_backend_log_limit_mb())
+        self.backend_log_limit_spin.connect(
+            "value-changed", self._backend_log_limit_changed
+        )
+        log_limit_suffix = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=6
+        )
+        log_limit_suffix.append(self.backend_log_limit_spin)
+        log_limit_suffix.append(Gtk.Label(label="MiB"))
+        log_limit_row = Adw.ActionRow(
+            title="Backend log storage limit",
+            subtitle=(
+                "50 MiB by default, adjustable up to 2,048 MiB. Applies after restart; "
+                "older data is trimmed then."
+            ),
+        )
+        log_limit_row.add_suffix(log_limit_suffix)
+        log_limit_row.set_activatable_widget(self.backend_log_limit_spin)
+        logging_group.add(log_limit_row)
         page.add(logging_group)
         window.add(page)
         window.connect("close-request", self._preferences_closed)
@@ -1033,6 +1091,15 @@ class MtkWindow(Adw.ApplicationWindow):
         except OSError as error:
             switch.set_active(not switch.get_active())
             self.toast_overlay.add_toast(Adw.Toast(title=f"Could not save logging preference: {error}"))
+
+    def _backend_log_limit_changed(self, spin):
+        try:
+            set_backend_log_limit_mb(spin.get_value_as_int())
+        except (OSError, ValueError) as error:
+            spin.set_value(get_backend_log_limit_mb())
+            self.toast_overlay.add_toast(
+                Adw.Toast(title=f"Could not save backend log limit: {error}")
+            )
 
     def _preferences_closed(self, *_args):
         self.preferences_window = None
@@ -2003,6 +2070,12 @@ class MtkWindow(Adw.ApplicationWindow):
     def _prepare_backend(self):
         # Import only after GTK has started; backend dependency/setup errors then
         # become visible in both the UI and the launching terminal.
+        self.backend_log_setup_event.wait()
+        if self.backend_log_setup_error:
+            raise RuntimeError(
+                f"Could not enforce backend log storage limit: "
+                f"{self.backend_log_setup_error}"
+            ) from self.backend_log_setup_error
         from mtkclient.Library.DA.mtk_da_handler import DaHandler
         from mtkclient.Library.Partitions.gpt import GptSettings
         from mtkclient.Library.mtk_class import Mtk
@@ -2296,6 +2369,8 @@ class MtkWindow(Adw.ApplicationWindow):
         self.partition_pin_status.clear()
         self.partition_images.clear()
         self.partition_source_labels.clear()
+        self.partition_source_stacks.clear()
+        self.partition_source_texts.clear()
         self.partition_sources.clear()
         self.partition_image_status = {}
         for name, size in self.partitions:
@@ -2309,18 +2384,28 @@ class MtkWindow(Adw.ApplicationWindow):
             image_status.set_visible(False)
             row.add_suffix(image_status)
             self.partition_image_status[name] = image_status
-            source = Gtk.Label(label="No source found")
-            source.add_css_class("dimmed")
+            source = Gtk.ProgressBar()
+            source.set_show_text(True)
+            source.set_text("No source found")
             source.set_halign(Gtk.Align.FILL)
             source.set_hexpand(True)
-            source.set_xalign(0.5)
-            source.set_justify(Gtk.Justification.CENTER)
-            source.set_wrap(True)
-            source.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             source.set_tooltip_text("Source image for this partition, if identified")
-            source.set_visible(self.show_partition_sources.get_active())
-            row.add_suffix(source)
+            source_text = Gtk.Label(label="No source found")
+            source_text.add_css_class("dimmed")
+            source_text.set_hexpand(True)
+            source_text.set_wrap(True)
+            source_text.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            source_text.set_tooltip_text("Source image for this partition, if identified")
+            source_stack = Gtk.Stack()
+            source_stack.set_hexpand(True)
+            source_stack.add_named(source, "processing")
+            source_stack.add_named(source_text, "result")
+            source_stack.set_visible_child_name("result")
+            source_stack.set_visible(self.show_partition_sources.get_active())
+            row.add_suffix(source_stack)
             self.partition_source_labels[name] = source
+            self.partition_source_stacks[name] = source_stack
+            self.partition_source_texts[name] = source_text
             self.partition_sources[name] = "No source found"
             pin_status = Gtk.Image.new_from_icon_name("view-pin-symbolic")
             pin_status.set_tooltip_text("Pinned to top")
@@ -2407,7 +2492,7 @@ class MtkWindow(Adw.ApplicationWindow):
 
     def _toggle_partition_sources(self, check):
         visible = check.get_active()
-        for label in self.partition_source_labels.values():
+        for label in self.partition_source_stacks.values():
             label.set_visible(visible)
 
     @staticmethod
@@ -2888,8 +2973,9 @@ class MtkWindow(Adw.ApplicationWindow):
     def _set_operation_running(self, running, title=""):
         self.operation_busy = running
         bars = (self.operation_progress, self.storage_progress, self.tools_progress)
+        partition_identification = title in ("Identify firmware", "Verify firmware matches")
         for bar in bars:
-            bar.set_visible(running)
+            bar.set_visible(running and not partition_identification)
         if running:
             for button in (self.read_button, self.write_button, self.erase_button,
                            self.raw_read_button, self.raw_write_button, self.key_button,
@@ -2904,7 +2990,7 @@ class MtkWindow(Adw.ApplicationWindow):
                 bar.set_text("Starting…")
             for label in (self.operation_status, self.storage_status, self.tools_status):
                 label.set_text(f"{title}… See Logs for details.")
-            if title in ("Identify firmware", "Verify firmware matches"):
+            if partition_identification:
                 self._selection_changed()
             GLib.timeout_add(120, self._pulse_progress)
         else:
@@ -2945,8 +3031,9 @@ class MtkWindow(Adw.ApplicationWindow):
                 bar.set_visible(False)
             return GLib.SOURCE_REMOVE
         if not self.operation_has_progress:
-            for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
-                bar.pulse()
+            if self.operation_title not in ("Identify firmware", "Verify firmware matches"):
+                for bar in (self.operation_progress, self.storage_progress, self.tools_progress):
+                    bar.pulse()
             if (getattr(self, "identify_progress", None)
                     and self.identify_progress.get_visible()
                     and not self.identify_has_progress):
@@ -2955,6 +3042,10 @@ class MtkWindow(Adw.ApplicationWindow):
                 and self.identify_progress.get_visible()
                 and self.identify_waiting_on_read):
             self.identify_progress.pulse()
+        if self.operation_title in ("Identify firmware", "Verify firmware matches"):
+            for bar in self.partition_source_labels.values():
+                if bar.get_text() == "Processing…":
+                    bar.pulse()
         return GLib.SOURCE_CONTINUE
 
     def _operation_finished(self, title, error, result=None):
@@ -3307,6 +3398,13 @@ class MtkWindow(Adw.ApplicationWindow):
             "Preparing image checks",
         )
         self._clear_identify_results()
+        for name, bar in self.partition_source_labels.items():
+            bar.set_fraction(0)
+            bar.set_text("Processing…")
+            self.partition_source_stacks[name].set_visible_child_name("processing")
+            self.partition_source_stacks[name].set_visible(
+                self.show_partition_sources.get_active()
+            )
 
         def scan_worker():
             mtk = self.backend.mtk
@@ -3322,6 +3420,8 @@ class MtkWindow(Adw.ApplicationWindow):
                 cancel=cancel_token,
                 progress=lambda name, count, message, fraction: GLib.idle_add(
                     self._update_identification_progress, name, count, message, fraction),
+                on_partition_result=lambda result: GLib.idle_add(
+                    self._show_partition_source_result, result, directory),
             )
             GLib.idle_add(self._show_identify_results, results)
 
@@ -3358,11 +3458,7 @@ class MtkWindow(Adw.ApplicationWindow):
                 else:
                     source = "No match"
                 self.partition_sources[partition] = source
-                self.partition_source_labels[partition].set_text(source)
-                self.partition_source_labels[partition].set_tooltip_text(source)
-                self.partition_source_labels[partition].set_visible(
-                    self.show_partition_sources.get_active()
-                )
+                self._set_partition_source_display(partition, source)
             geometry = self.partition_geometry.get(partition, {})
             if status.startswith("Verified whole-partition equality"):
                 outcome = "Verified · whole partition"
@@ -3458,8 +3554,35 @@ class MtkWindow(Adw.ApplicationWindow):
     def _clear_partition_sources(self):
         for partition, label in self.partition_source_labels.items():
             self.partition_sources[partition] = "No source found"
-            label.set_text("No source found")
+            label.set_fraction(0)
             label.set_tooltip_text("Source image for this partition, if identified")
+            self.partition_source_texts[partition].set_text("No source found")
+            self.partition_source_stacks[partition].set_visible_child_name("result")
+
+    def _set_partition_source_display(self, partition, source):
+        text = self.partition_source_texts[partition]
+        text.set_text(source)
+        text.set_tooltip_text(source)
+        self.partition_source_stacks[partition].set_visible_child_name("result")
+        self.partition_source_stacks[partition].set_visible(
+            self.show_partition_sources.get_active()
+        )
+
+    def _show_partition_source_result(self, result, directory):
+        partition, matches, status, _coverage = result
+        if partition not in self.partition_sources:
+            return GLib.SOURCE_REMOVE
+        if len(matches) == 1 and status.startswith(("Likely match", "Verified")):
+            source = os.path.realpath(os.path.join(directory, matches[0][0]))
+        elif len(matches) > 1:
+            source = f"Ambiguous ({len(matches)} images)"
+        elif status.startswith("Unknown"):
+            source = "Unknown"
+        else:
+            source = "No match"
+        self.partition_sources[partition] = source
+        self._set_partition_source_display(partition, source)
+        return GLib.SOURCE_REMOVE
 
     def _read_partitions(self, selected, folder, include_gpt=True):
         handler = self.backend

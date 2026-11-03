@@ -22,6 +22,7 @@ class DebianPackagingTests(unittest.TestCase):
         for module in (
             "app_settings.py",
             "backend_manager.py",
+            "bounded_logging.py",
             "mtk_adwaita.py",
             "mtk_image_identify.py",
             "sitecustomize.py",

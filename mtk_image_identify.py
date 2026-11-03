@@ -564,12 +564,17 @@ class ImageIndex:
         ))
 
 
-def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None, progress=None, directory=None):
+def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None, progress=None,
+             directory=None, on_partition_result=None):
     """Match candidates against a read_at(partition, offset, length) device seam.
 
     partitions are mappings: name, size, and arbitrary geometry supplied to read_at.
     """
     results = []
+    def record_result(result):
+        results.append(result)
+        if on_partition_result:
+            on_partition_result(result)
     partition_list = list(partitions)
     partition_count = max(1, len(partition_list))
     offset_plan_cache = {}
@@ -584,8 +589,10 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
     except InterruptedError:
         raise
     except (OSError, RuntimeError, ValueError) as error:
-        return [(partition["name"], [], f"Unknown: local image indexing failed ({error})", "0 bytes")
-                for partition in partition_list]
+        for partition in partition_list:
+            record_result((partition["name"], [],
+                           f"Unknown: local image indexing failed ({error})", "0 bytes"))
+        return results
     for partition_number, partition in enumerate(partition_list, 1):
         if cancel and cancel.is_set():
             raise InterruptedError("partition scan cancelled")
@@ -601,10 +608,10 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
         candidates = [(image, size) for image, size in indexed if size <= partition["size"]]
         if not candidates:
             if any(not image.unchanged() for image, _size in indexed):
-                results.append((partition["name"], [(_display_path(i.path, directory), s) for i, s in indexed],
-                                "Unknown: image changed during matching", "0 bytes"))
+                record_result((partition["name"], [(_display_path(i.path, directory), s) for i, s in indexed],
+                               "Unknown: image changed during matching", "0 bytes"))
                 continue
-            results.append((partition["name"], [], "No size-compatible images", "0 bytes"))
+            record_result((partition["name"], [], "No size-compatible images", "0 bytes"))
             report(
                 f"Partition {partition_number}/{len(partition_list)} · no size-compatible images",
                 partition_number / partition_count,
@@ -714,9 +721,9 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                 potential = [(_display_path(image.path, directory), size) for image, size in remaining]
                 detail = getattr(read_at, "last_error", None)
                 reason = f" ({detail})" if detail else ""
-                results.append((partition["name"], potential,
-                                f"Unknown: partition read failed{reason}",
-                                f"{sampled} device bytes read"))
+                record_result((partition["name"], potential,
+                               f"Unknown: partition read failed{reason}",
+                               f"{sampled} device bytes read"))
                 remaining = []
                 read_failed = True
                 return
@@ -854,9 +861,9 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                 potential = [(_display_path(image.path, directory), size) for image, size in active]
                 detail = getattr(read_at, "last_error", None)
                 reason = f" ({detail})" if detail else ""
-                results.append((partition["name"], potential,
-                                f"Unknown: full verification read failed{reason}",
-                                f"{sampled} device bytes read"))
+                record_result((partition["name"], potential,
+                               f"Unknown: full verification read failed{reason}",
+                               f"{sampled} device bytes read"))
                 continue
             remaining = list(active)
             coverage_compared = max(compared_by_path.values(), default=0)
@@ -881,12 +888,12 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
             status += "; DONT_CARE regions unverified"
         if any(not image.unchanged() for image, _size in indexed):
             potential = [(_display_path(image.path, directory), size) for image, size in candidates]
-            results.append((partition["name"], potential, "Unknown: an image changed during matching",
-                            f"{sampled} device bytes read"))
+            record_result((partition["name"], potential, "Unknown: an image changed during matching",
+                           f"{sampled} device bytes read"))
             continue
         # Keep ambiguous candidates; display basename but never use it for ranking.
-        results.append((partition["name"], [(_display_path(i.path, directory), s) for i, s in remaining],
-                        status, f"{sampled} device bytes read; up to {coverage_compared} defined image bytes compared"))
+        record_result((partition["name"], [(_display_path(i.path, directory), s) for i, s in remaining],
+                       status, f"{sampled} device bytes read; up to {coverage_compared} defined image bytes compared"))
         report(
             f"Partition {partition_number}/{len(partition_list)} complete · {status}",
             partition_number / partition_count,
@@ -900,6 +907,9 @@ def identify(index: ImageIndex, partitions, read_at, *, full=False, cancel=None,
                 (partition, matches, "Unknown: image directory changed during matching", coverage)
                 for partition, matches, _status, coverage in results
             ]
+            if on_partition_result:
+                for result in results:
+                    on_partition_result(result)
     return results
 
 
