@@ -24,32 +24,44 @@ A modern, GNOME-native MTK client frontend, built with Python, PyGObject, GTK 4,
 
 ![Firmware image source identification screen](screenshots/source-indentifier.png)
 
-## Run
+## Install
 
-Install GTK 4 and libadwaita development/runtime packages plus PyGObject for your distribution, then run:
+Choose one of these options:
 
-```sh
-./run.sh
-```
-
-### Install from source with one command
-
-On a system that already has Python 3, PyGObject, GTK 4, Cairo, and libadwaita
-1.4 or newer, install Fuse into your user account and add it to the GNOME app
-grid directly from the current `main` source with:
+### One-command install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Dev-in-the-BM/Fuse/main/install.sh | sh
 ```
 
-This does not install a `.deb`, Flatpak, or AppImage, and does not use `sudo`
-or a system package manager. It installs source under `~/.local/opt/fuse/` and
-creates a per-user desktop entry and icons. The MTK Client backend can then be
-installed from Fuse's Preferences. The GTK/Python runtime is an OS prerequisite;
-the script checks for it and exits with guidance instead of installing system
-packages.
+This installs Fuse from source. If required system dependencies are missing, the installer shows the packages and asks before installing them with your package manager. It supports Debian/Ubuntu, Fedora/RHEL, openSUSE, Arch, and Alpine.
+Python 3.10+ and libadwaita 1.4+ are required.
 
-Install MTK Client from **Preferences → Backend installation**, or choose an existing checkout under **MTK Client backend**. Installation downloads it into the user's data directory and uses `uv` when available, otherwise a private venv and pip. It does not use sudo. USB access can be configured separately from **Preferences → USB device access**. Where PolicyKit is available, the app requests authorization for a focused udev rule; otherwise it displays manual commands. The rule grants the active local user access to MediaTek and common Android USB vendor IDs. Reconnect the device after setup. The selection is saved per user and used by both `./run.sh` and the GNOME app-grid launcher. For temporary overrides during development, set `MTKCLIENT_DIR` to a directory containing the checkout's `pyproject.toml` and `uv.lock`:
+### Download a release
+
+Get the latest `.deb`, AppImage, or Flatpak from
+[GitHub Releases](https://github.com/Dev-in-the-BM/Fuse/releases):
+
+
+The `.deb` uses your system GTK/Python runtime. The AppImage and Flatpak bundle
+the application runtime and MTK Client backend. With the one-command source
+install or `.deb`, install the backend separately from Fuse's Preferences or
+select an existing checkout.
+
+If installing from a source checkout for development, see [Run from source](#run-from-source).
+
+<details>
+  <summary><h2>If you like playing with the source</h2></summary>
+## Run from source
+
+For development, install GTK 4, libadwaita 1.4+, Cairo, and PyGObject using your
+distribution's packages, then run:
+
+```sh
+./run.sh
+```
+
+Install MTK Client from **Preferences → Backend installation**, or choose an existing checkout under **MTK Client backend**. Installation downloads it into the user's data directory and uses `uv` when available, otherwise a private venv and pip. USB access can be configured separately from **Preferences → USB device access**. For temporary overrides during development, set `MTKCLIENT_DIR` to a directory containing the checkout's `pyproject.toml` and `uv.lock`:
 
 ```sh
 MTKCLIENT_DIR=/path/to/mtk-client ./run.sh
@@ -76,3 +88,6 @@ sudo apt install ../quest.devinthebm.fuse_*.deb
 ```
 
 The package installs Fuse, its desktop entry and icons, and the USB udev rule. It depends on the system GTK/Python runtime and the tools required for the optional per-user backend installer; it does not bundle MTK Client. Backend installation still happens from Preferences and requires an internet connection. Reconnect the device after installing the package so udev can apply the rule.
+
+  ```
+</details>

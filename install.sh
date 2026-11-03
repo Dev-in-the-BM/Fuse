@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -32,25 +33,136 @@ DESKTOP_ICONS = tuple(
     f"fuse-mtk-app-icon-{size}.png"
     for size in (16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512)
 ) + ("fuse-mtk-app-icon.svg",)
+RUNTIME_PROBE = """
+import sys
+if sys.version_info < (3, 10):
+    print(f"Python 3.10 or newer is required (found {sys.version.split()[0]}).")
+    raise SystemExit(1)
+try:
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw
+    import cairo
+except Exception as exc:
+    print(f"GTK/Python runtime is unavailable: {exc}")
+    raise SystemExit(1)
+if not hasattr(Adw, "ToolbarView"):
+    print("libadwaita 1.4 or newer is required (Adw.ToolbarView is unavailable).")
+    raise SystemExit(1)
+"""
+
+DEPENDENCIES = {
+    "apt": (
+        "python3", "python3-gi", "python3-gi-cairo", "python3-cairo",
+        "gir1.2-gtk-4.0", "gir1.2-adw-1",
+    ),
+    "dnf": (
+        "python3", "python3-gobject", "python3-cairo", "gtk4", "libadwaita",
+    ),
+    "zypper": (
+        "python3", "python3-gobject", "python3-cairo", "gtk4", "libadwaita",
+        "typelib-1_0-Gtk-4_0", "typelib-1_0-Adw-1",
+    ),
+    "pacman": (
+        "python", "python-gobject", "python-cairo", "gtk4", "libadwaita",
+    ),
+    "apk": (
+        "python3", "py3-gobject3", "py3-cairo", "gtk4.0", "libadwaita",
+    ),
+}
 
 
-def check_runtime() -> None:
-    if sys.version_info < (3, 10):
-        print("Fuse requires Python 3.10 or newer.", file=sys.stderr)
-        raise SystemExit(1)
+def runtime_problems() -> list[str]:
+    result = subprocess.run(
+        ["/usr/bin/python3", "-c", RUNTIME_PROBE], capture_output=True,
+        text=True, check=False,
+    )
+    if result.returncode == 0:
+        return []
+    diagnostics = result.stderr + result.stdout
+    return [line for line in diagnostics.splitlines() if line.strip()] or [
+        "Python/GTK runtime check failed"
+    ]
+
+
+def detect_package_manager() -> str | None:
+    os_release = {}
     try:
-        import gi
-        gi.require_version("Gtk", "4.0")
-        gi.require_version("Adw", "1")
-        from gi.repository import Adw
-        import cairo  # noqa: F401
-    except Exception as exc:
-        print(f"Fuse's system GTK/Python runtime is missing: {exc}", file=sys.stderr)
-        print("Install your distribution's Python 3, PyGObject, GTK 4, libadwaita, and Cairo runtime packages, then rerun this command.", file=sys.stderr)
-        raise SystemExit(1)
-    if not hasattr(Adw, "ToolbarView"):
-        print("Fuse requires libadwaita 1.4 or newer (Adw.ToolbarView is unavailable).", file=sys.stderr)
-        raise SystemExit(1)
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                os_release[key] = value.strip().strip('"').lower()
+    except OSError:
+        pass
+    ids = {os_release.get("id", "")}
+    ids.update(os_release.get("id_like", "").split())
+    families = (
+        ("apt", {"debian", "ubuntu", "linuxmint", "pop", "elementary", "zorin", "raspbian", "kali", "deepin", "mx"}),
+        ("dnf", {"fedora", "rhel", "centos", "rocky", "almalinux", "ol", "amzn", "nobara"}),
+        ("zypper", {"suse", "opensuse", "opensuse-leap", "opensuse-tumbleweed", "sled", "sles"}),
+        ("pacman", {"arch", "archarm", "manjaro", "endeavouros", "artix", "cachyos", "garuda", "steamos"}),
+        ("apk", {"alpine"}),
+    )
+    executables = {"apt": "apt-get", "dnf": "dnf", "zypper": "zypper",
+                   "pacman": "pacman", "apk": "apk"}
+    for manager, family_ids in families:
+        if ids & family_ids and shutil.which(executables[manager]):
+            return manager
+    for manager, executable in executables.items():
+        if shutil.which(executable):
+            return manager
+    return None
+
+
+def consent_to_dependencies(manager: str, problems: list[str]) -> bool:
+    if os.geteuid() == 0:
+        print("Run install.sh as your normal user; it will request administrator authorization when needed.", file=sys.stderr)
+        return False
+    privilege = shutil.which("sudo") or shutil.which("doas")
+    if not privilege:
+        print("Missing system dependencies, but neither sudo nor doas is available to install them.", file=sys.stderr)
+        return False
+    packages = DEPENDENCIES[manager]
+    prefix = Path(privilege).name
+    commands = {
+        "apt": f"{prefix} apt-get update && {prefix} apt-get install -y {' '.join(packages)}",
+        "dnf": f"{prefix} dnf install -y {' '.join(packages)}",
+        "zypper": f"{prefix} zypper --non-interactive install {' '.join(packages)}",
+        "pacman": f"{prefix} pacman -S --needed --noconfirm {' '.join(packages)}",
+        "apk": f"{prefix} apk add --no-cache {' '.join(packages)}",
+    }
+    print("Fuse needs these system dependencies:", file=sys.stderr)
+    for problem in problems:
+        print(f"  - {problem}", file=sys.stderr)
+    print(f"Detected package manager: {manager}", file=sys.stderr)
+    print(f"Packages: {' '.join(packages)}", file=sys.stderr)
+    print(f"Command (after your approval): {commands[manager]}", file=sys.stderr)
+    try:
+        tty = open("/dev/tty", "r+", encoding="utf-8")
+    except OSError:
+        print("Cannot prompt without a terminal; rerun this installer interactively to approve dependency installation.", file=sys.stderr)
+        return False
+    with tty:
+        tty.write("Install these dependencies with your system package manager? [y/N] ")
+        tty.flush()
+        return tty.readline().strip().lower() in ("y", "yes")
+
+
+def install_dependencies(manager: str) -> None:
+    privilege = shutil.which("sudo") or shutil.which("doas")
+    if not privilege:
+        raise RuntimeError("Dependency installation needs sudo or doas, but neither is available.")
+    packages = DEPENDENCIES[manager]
+    commands = {
+        "apt": [["apt-get", "update"], ["apt-get", "install", "-y", *packages]],
+        "dnf": [["dnf", "install", "-y", *packages]],
+        "zypper": [["zypper", "--non-interactive", "install", *packages]],
+        "pacman": [["pacman", "-S", "--needed", "--noconfirm", *packages]],
+        "apk": [["apk", "add", "--no-cache", *packages]],
+    }
+    for command in commands[manager]:
+        subprocess.run([privilege, *command], check=True)
 
 
 def unpack_source(archive: bytes, destination: Path) -> str:
@@ -113,7 +225,24 @@ def source_revision(source: Path) -> str:
 
 
 def main() -> int:
-    check_runtime()
+    problems = runtime_problems()
+    if problems:
+        manager = detect_package_manager()
+        if not manager:
+            print("Could not identify a supported package manager. Supported families are Debian/Ubuntu, Fedora/RHEL, openSUSE, Arch, and Alpine.", file=sys.stderr)
+            print("Missing runtime: " + "; ".join(problems), file=sys.stderr)
+            raise SystemExit(1)
+        if not consent_to_dependencies(manager, problems):
+            print("Dependency installation was not approved; Fuse was not installed.", file=sys.stderr)
+            raise SystemExit(1)
+        install_dependencies(manager)
+        problems = runtime_problems()
+        if problems:
+            print("The package manager finished, but Fuse's runtime is still insufficient:", file=sys.stderr)
+            for problem in problems:
+                print(f"  - {problem}", file=sys.stderr)
+            print("Your distribution may be too old to provide libadwaita 1.4+; upgrade it or install newer GTK/libadwaita packages, then rerun install.sh.", file=sys.stderr)
+            raise SystemExit(1)
     install_root = Path.home() / ".local/opt/fuse"
     install_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".fuse-install-", dir=install_root) as temporary:
