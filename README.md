@@ -51,7 +51,7 @@ select an existing checkout.
 If installing from a source checkout for development, see [Run from source](#run-from-source).
 
 <details>
-  <summary><h2>If you like playing with the source</h2></summary>
+  <summary><h3>If you like playing with the source</h3></summary>
   
 ## Run from source
 
